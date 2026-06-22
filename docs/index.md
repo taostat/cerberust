@@ -66,9 +66,9 @@ cerberust is built to stop these specific things:
 
 - **Deterministic where it counts, ML where it has to be.** The PII, secret,
   regex, and ban scanners are deterministic regex-and-checksum matchers — fast,
-  predictable, and on by default. The prompt-injection scanner is an ML model and
-  is opt-in, behind a feature flag, because it's heavy and its precision depends on
-  your traffic.
+  predictable, and shipped in the default build. The prompt-injection scanner is an
+  ML model behind an opt-in feature flag, because it's heavy and its precision
+  depends on your traffic.
 
 ## Where to next
 
