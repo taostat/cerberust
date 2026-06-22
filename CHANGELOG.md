@@ -7,6 +7,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **`StreamOutput` no longer borrows the `ScannerStack` for its lifetime.** It is
+  built from a shared `&ScannerStack` and the stack is passed per call —
+  `push(&mut stack, chunk)` and `finish(&mut stack)` — so one runner can be held
+  across many independent async frame callbacks (a per-frame SSE/JSON consumer)
+  without a long-lived borrow. Hold-back, no-leak, and streaming-≡-unary
+  guarantees are unchanged.
+
+### Added
+
+- **`RestoreEncoder` restore hook.** A caller-supplied transform applied to each
+  restored original before it is spliced back into the output, installed via
+  `ScannerStack::set_restore_encoder` — e.g. to JSON-escape a rehydrated value
+  placed inside a JSON string in an SSE stream. It sees only the restored
+  original, never the surrounding model text. The default is
+  `RestoreEncoder::identity` (originals verbatim), so restore is unchanged unless
+  a hook is set.
+
 ## [0.1.0]
 
 Initial public release.

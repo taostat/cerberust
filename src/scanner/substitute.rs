@@ -17,6 +17,73 @@
 //! [`Substituter::substitute`] is the unary path the [`ScannerStack`] uses
 //! today.
 
+/// The shared closure behind a [`RestoreEncoder`]: maps a restored original to
+/// its encoded form. `Arc` so the encoder is cheap to `Clone` onto the context.
+type EncodeFn = std::sync::Arc<dyn Fn(&str) -> String + Send + Sync>;
+
+/// A caller-supplied transform applied to each restored original before it is
+/// spliced back into the output, e.g. JSON-escaping a value being placed inside
+/// a JSON string in an SSE/JSON stream. It sees only the rehydrated original —
+/// never the surrounding model text — so the caller escapes exactly the bytes
+/// it is introducing and nothing the upstream already encoded.
+///
+/// The default is [`RestoreEncoder::identity`]: the original is emitted
+/// verbatim, so restore is byte-for-byte unchanged unless a hook is installed.
+#[derive(Clone)]
+pub struct RestoreEncoder {
+    /// `None` is identity — a hot-path marker that splices the original's raw
+    /// bytes with no allocation. `Some(f)` maps an original to its encoded form.
+    encode: Option<EncodeFn>,
+}
+
+impl RestoreEncoder {
+    /// The identity encoder: restored originals are emitted unchanged.
+    #[must_use]
+    pub fn identity() -> Self {
+        Self { encode: None }
+    }
+
+    /// An encoder from a closure mapping each original to its encoded form.
+    #[must_use]
+    pub fn new(encode: impl Fn(&str) -> String + Send + Sync + 'static) -> Self {
+        Self {
+            encode: Some(std::sync::Arc::new(encode)),
+        }
+    }
+
+    /// Encode `original` and append the result to `out`. Identity appends the raw
+    /// bytes with no allocation; otherwise the closure's `String` is appended.
+    fn encode_into(&self, original: &[u8], out: &mut Vec<u8>) {
+        match &self.encode {
+            None => out.extend_from_slice(original),
+            Some(f) => {
+                // Originals are interned from `&str`, so they are valid UTF-8.
+                let original = String::from_utf8_lossy(original);
+                out.extend_from_slice(f(&original).as_bytes());
+            }
+        }
+    }
+}
+
+impl Default for RestoreEncoder {
+    fn default() -> Self {
+        Self::identity()
+    }
+}
+
+impl std::fmt::Debug for RestoreEncoder {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let kind = if self.encode.is_some() {
+            "custom"
+        } else {
+            "identity"
+        };
+        f.debug_struct("RestoreEncoder")
+            .field("kind", &kind)
+            .finish()
+    }
+}
+
 /// A request's sentinel→original table, pre-sorted longest-sentinel first so a
 /// complete sentinel is matched before any shorter sentinel that prefixes it.
 #[derive(Debug, Clone)]
@@ -68,6 +135,17 @@ impl Substituter {
     /// longest-first table is unambiguous.
     #[must_use]
     pub fn substitute(&self, text: &str) -> String {
+        self.substitute_with(text, &RestoreEncoder::identity())
+    }
+
+    /// Like [`Self::substitute`], but each restored original is passed through
+    /// `encoder` before it is spliced in. The surrounding non-sentinel bytes are
+    /// emitted verbatim — only the originals are transformed — so a caller
+    /// splicing into a JSON/SSE stream can JSON-escape exactly the rehydrated
+    /// value without touching bytes the model already encoded. With
+    /// [`RestoreEncoder::identity`] this is byte-identical to [`Self::substitute`].
+    #[must_use]
+    pub fn substitute_with(&self, text: &str, encoder: &RestoreEncoder) -> String {
         let bytes = text.as_bytes();
         let mut out: Vec<u8> = Vec::with_capacity(bytes.len());
         let mut i = 0;
@@ -75,7 +153,7 @@ impl Substituter {
             if bytes[i] == b'[' {
                 for sub in &self.subs {
                     if matches_at(bytes, i, sub) {
-                        out.extend_from_slice(&sub.original);
+                        encoder.encode_into(&sub.original, &mut out);
                         i += sub.sentinel.len();
                         continue 'scan;
                     }
@@ -187,5 +265,30 @@ mod tests {
     fn unrelated_bracket_run_untouched() {
         let s = subber(&[("[REDACTED_EMAIL_1_abcd1234]", "alice@x.com")]);
         assert_eq!(s.substitute("price [50] then text"), "price [50] then text");
+    }
+
+    #[test]
+    fn identity_encoder_matches_plain_substitute() {
+        let s = subber(&[("[REDACTED_EMAIL_1_abcd1234]", "a\"b\nc")]);
+        let text = "x [REDACTED_EMAIL_1_abcd1234] y";
+        // The default substitute and an explicit identity encoder agree, and
+        // neither touches the surrounding bytes.
+        assert_eq!(
+            s.substitute(text),
+            s.substitute_with(text, &RestoreEncoder::identity()),
+        );
+        assert_eq!(s.substitute(text), "x a\"b\nc y");
+    }
+
+    #[test]
+    fn encoder_transforms_only_the_restored_original() {
+        let s = subber(&[("[REDACTED_EMAIL_1_abcd1234]", "a\"b")]);
+        // A JSON-string escaper applied to the original; the surrounding `"` is
+        // model text and must be left untouched.
+        let enc = RestoreEncoder::new(|o| o.replace('"', "\\\""));
+        assert_eq!(
+            s.substitute_with("say \"[REDACTED_EMAIL_1_abcd1234]\"", &enc),
+            "say \"a\\\"b\"",
+        );
     }
 }

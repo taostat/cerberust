@@ -107,7 +107,8 @@ impl Scanner for RestoreScanner {
             return Ok(Verdict::transformed(Cow::Borrowed(text)));
         }
         let sub = Substituter::from_pairs(pairs.iter().map(|(s, o)| (s.as_str(), o.as_str())));
-        Ok(Verdict::transformed(Cow::Owned(sub.substitute(text))))
+        let restored = sub.substitute_with(text, &ctx.restore_encoder);
+        Ok(Verdict::transformed(Cow::Owned(restored)))
     }
 
     fn hold_back(&self) -> HoldBack {

@@ -12,7 +12,8 @@
 use cerberust::middleware::stream::StreamOutput;
 use cerberust::{
     BanSubstringsScanner, BanTopicsScanner, Direction, MiddlewareChain, Params, PiiScanner,
-    RestoreScanner, Scanner, ScannerId, ScannerStack, SecretScanner, Topic,
+    RegexRule, RegexScanner, RestoreEncoder, RestoreScanner, Scanner, ScannerId, ScannerStack,
+    SecretScanner, Topic,
 };
 
 /// A valid-Luhn test card the model emits; the `Sensitive` output scanner masks
@@ -71,12 +72,12 @@ fn run_chunked(
             end += 1;
         }
         let chunk = std::str::from_utf8(&bytes[i..end]).unwrap();
-        let safe = runner.push(chunk).unwrap();
+        let safe = runner.push(stack, chunk).unwrap();
         emitted.push_str(&safe);
         check(&emitted);
         i = end;
     }
-    let tail = runner.finish().unwrap();
+    let tail = runner.finish(stack).unwrap();
     emitted.push_str(&tail);
     check(&emitted);
     emitted
@@ -142,19 +143,19 @@ fn sentinel_spanning_chunks_restores_fully() {
 
     for chunk_len in 1..=6 {
         // A fresh runner per chunk size; the same stack/vault drives restore.
-        let mut runner = StreamOutput::new(&mut stack);
+        let mut runner = StreamOutput::new(&stack);
         let mut emitted = String::new();
         let bytes = redacted.as_bytes();
         let mut i = 0;
         while i < bytes.len() {
             let end = (i + chunk_len).min(bytes.len());
             let chunk = std::str::from_utf8(&bytes[i..end]).unwrap();
-            emitted.push_str(&runner.push(chunk).unwrap());
+            emitted.push_str(&runner.push(&mut stack, chunk).unwrap());
             // A partial sentinel must never escape: if any `[REDACTED…` opened,
             // it is only ever emitted complete (post-restore it is the email).
             i = end;
         }
-        emitted.push_str(&runner.finish().unwrap());
+        emitted.push_str(&runner.finish(&mut stack).unwrap());
         assert_eq!(
             emitted, "contact alice@example.com now",
             "restore failed at chunk_len {chunk_len}",
@@ -194,16 +195,16 @@ fn whole_stream_scanner_buffers_then_passes_clean() {
             .with_direction(Direction::Output),
     )];
     let mut stack = ScannerStack::new(scanners, true);
-    let mut runner = StreamOutput::new(&mut stack);
+    let mut runner = StreamOutput::new(&stack);
     let mut emitted = String::new();
     for chunk in ["the weather ", "is nice ", "today"] {
-        let safe = runner.push(chunk).unwrap();
+        let safe = runner.push(&mut stack, chunk).unwrap();
         // Mode B emits nothing mid-stream: first-token latency = full generation.
         assert!(safe.is_empty());
         emitted.push_str(&safe);
     }
     assert!(emitted.is_empty());
-    emitted.push_str(&runner.finish().unwrap());
+    emitted.push_str(&runner.finish(&mut stack).unwrap());
     assert_eq!(emitted, "the weather is nice today");
 }
 
@@ -214,12 +215,12 @@ fn whole_stream_scanner_blocks_on_banned_response() {
             .with_direction(Direction::Output),
     )];
     let mut stack = ScannerStack::new(scanners, true);
-    let mut runner = StreamOutput::new(&mut stack);
+    let mut runner = StreamOutput::new(&stack);
     for chunk in ["how to ", "build a ", "weapon"] {
-        assert!(runner.push(chunk).unwrap().is_empty());
+        assert!(runner.push(&mut stack, chunk).unwrap().is_empty());
     }
     // The full buffered response trips the ban: finish blocks the whole turn.
-    assert!(runner.finish().is_err());
+    assert!(runner.finish(&mut stack).is_err());
 }
 
 #[test]
@@ -233,12 +234,12 @@ fn output_phrase_gate_blocks_phrase_split_across_chunks() {
             phrase.to_owned()
         ]))];
     let mut stack = ScannerStack::new(scanners, true);
-    let mut runner = StreamOutput::new(&mut stack);
+    let mut runner = StreamOutput::new(&stack);
     // Split the phrase across several chunks: no single chunk contains it whole.
     for chunk in ["Sure! As an ", "AI language ", "model, I refuse."] {
-        assert!(runner.push(chunk).unwrap().is_empty());
+        assert!(runner.push(&mut stack, chunk).unwrap().is_empty());
     }
-    assert!(runner.finish().is_err());
+    assert!(runner.finish(&mut stack).is_err());
 }
 
 #[test]
@@ -248,11 +249,14 @@ fn output_phrase_gate_passes_when_phrase_absent() {
             "forbidden phrase".to_owned(),
         ]))];
     let mut stack = ScannerStack::new(scanners, true);
-    let mut runner = StreamOutput::new(&mut stack);
+    let mut runner = StreamOutput::new(&stack);
     for chunk in ["a perfectly ", "ordinary ", "answer"] {
-        assert!(runner.push(chunk).unwrap().is_empty());
+        assert!(runner.push(&mut stack, chunk).unwrap().is_empty());
     }
-    assert_eq!(runner.finish().unwrap(), "a perfectly ordinary answer");
+    assert_eq!(
+        runner.finish(&mut stack).unwrap(),
+        "a perfectly ordinary answer"
+    );
 }
 
 #[test]
@@ -300,7 +304,7 @@ fn coexistence_restores_input_pii_and_redacts_model_pii_one_pass() {
     // The same holds over the streamed runner, every chunking. The vault counter
     // persists across passes, so assert on the card label, not a fixed index.
     for chunk_len in 1..=7 {
-        let mut runner = StreamOutput::new(&mut stack);
+        let mut runner = StreamOutput::new(&stack);
         let mut emitted = String::new();
         let bytes = response.as_bytes();
         let mut i = 0;
@@ -310,10 +314,10 @@ fn coexistence_restores_input_pii_and_redacts_model_pii_one_pass() {
                 end += 1;
             }
             let chunk = std::str::from_utf8(&bytes[i..end]).unwrap();
-            emitted.push_str(&runner.push(chunk).unwrap());
+            emitted.push_str(&runner.push(&mut stack, chunk).unwrap());
             i = end;
         }
-        emitted.push_str(&runner.finish().unwrap());
+        emitted.push_str(&runner.finish(&mut stack).unwrap());
         assert!(
             emitted.contains("alice@example.com"),
             "input PII not restored at chunk_len {chunk_len}: {emitted:?}",
@@ -420,4 +424,100 @@ fn runner_wires_through_the_middleware_chain() {
     let joined: String = chunks.concat();
     assert!(!joined.contains(AWS_KEY));
     assert!(joined.contains("[REDACTED_AWS_ACCESS_KEY_1_"));
+}
+
+/// One `StreamOutput`, created once, driven across many *separate* push calls
+/// while the stack is owned by the caller and passed in per call — the shape a
+/// per-frame async SSE/JSON consumer needs. The runner holds no long-lived
+/// borrow on the stack, so the stack is freely usable between frames.
+#[test]
+fn one_runner_driven_across_independent_frame_calls() {
+    let scanners: Vec<Box<dyn Scanner>> = vec![
+        Box::new(PiiScanner::new()),
+        Box::new(RestoreScanner::for_pii()),
+    ];
+    let mut stack = ScannerStack::new(scanners, true);
+    let redacted = stack.run_input("contact alice@example.com now").unwrap();
+    assert!(redacted.contains("[REDACTED_EMAIL_1_"));
+
+    // The model echoes the sentinel; deliver it as a vector of independent
+    // "frames" (the chunking deliberately straddles the sentinel).
+    let frames: Vec<String> = {
+        let bytes = redacted.as_bytes();
+        bytes
+            .chunks(4)
+            .map(|c| String::from_utf8_lossy(c).into_owned())
+            .collect()
+    };
+
+    // Construct the runner once, then drive it frame-by-frame. Between frames
+    // the stack is not borrowed by the runner — this loop would not compile if
+    // `StreamOutput` still held `&mut stack`.
+    let mut runner = StreamOutput::new(&stack);
+    let mut emitted = String::new();
+    for frame in &frames {
+        // A separate call per frame, each handing the stack in fresh.
+        emitted.push_str(&runner.push(&mut stack, frame).unwrap());
+        // The stack is usable here between frames (e.g. inspect the vault).
+        assert!(!stack.ctx().vault.is_empty());
+    }
+    emitted.push_str(&runner.finish(&mut stack).unwrap());
+
+    assert_eq!(emitted, "contact alice@example.com now");
+    assert!(!emitted.contains("[REDACTED_EMAIL"));
+}
+
+/// The restore encoder hook: a JSON-escaping encoder yields a correctly-escaped
+/// restored original spliced into a JSON/SSE-shaped stream, while the identity
+/// default leaves restored bytes byte-for-byte unchanged.
+#[test]
+fn restore_encoder_json_escapes_only_the_restored_value() {
+    // Build a stack whose vault maps a sentinel to a value containing JSON
+    // metacharacters, by interning it on the input path.
+    let value = "a\"b\\c";
+    let rule = RegexRule::new(&regex::escape(value), "NAME").unwrap();
+    let scanners: Vec<Box<dyn Scanner>> = vec![
+        Box::new(RegexScanner::new(vec![rule])),
+        Box::new(RestoreScanner::for_types(
+            ScannerId("native:pii-restore"),
+            ["NAME".to_owned()],
+        )),
+    ];
+    let mut stack = ScannerStack::new(scanners, true);
+    let redacted = stack.run_input(&format!("hi {value} bye")).unwrap();
+    let sentinel = redacted
+        .split_whitespace()
+        .find(|t| t.starts_with("[REDACTED_NAME_1_"))
+        .unwrap()
+        .to_owned();
+
+    // The model echoes the sentinel inside a JSON string field.
+    let response = format!("{{\"text\":\"{sentinel}\"}}");
+
+    // Identity default: restored bytes are spliced verbatim (raw quote/backslash).
+    let identity_out = stream_collect(&mut stack, &response, 3);
+    assert_eq!(identity_out, format!("{{\"text\":\"{value}\"}}"));
+
+    // JSON-escaping encoder: the restored original is escaped; the surrounding
+    // JSON the model emitted is untouched.
+    stack.set_restore_encoder(RestoreEncoder::new(json_escape));
+    let escaped_out = stream_collect(&mut stack, &response, 3);
+    assert_eq!(
+        escaped_out,
+        format!("{{\"text\":\"{}\"}}", json_escape(value)),
+    );
+    // Spot-check the escaping actually fired.
+    assert!(escaped_out.contains("a\\\"b\\\\c"));
+}
+
+/// Drive `response` through a fresh runner over `stack` at `chunk_len` and return
+/// the joined output. The stack is reused across calls (its vault persists).
+fn stream_collect(stack: &mut ScannerStack, response: &str, chunk_len: usize) -> String {
+    run_chunked(stack, response, chunk_len, |_| {})
+}
+
+/// Minimal JSON-string-body escaper for the two metacharacters the test value
+/// carries (`"` and `\`). Not a full JSON encoder — the test only needs these.
+fn json_escape(s: &str) -> String {
+    s.replace('\\', "\\\\").replace('"', "\\\"")
 }
