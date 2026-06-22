@@ -20,11 +20,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **`RestoreEncoder` restore hook.** A caller-supplied transform applied to each
   restored original before it is spliced back into the output, installed via
-  `ScannerStack::set_restore_encoder` / `ScanCtx::with_restore_encoder` — e.g. to
-  JSON-escape a rehydrated value placed inside a JSON string in an SSE stream. It
-  sees only the restored original, never the surrounding model text. The default
-  is `RestoreEncoder::identity` (originals verbatim), so restore is unchanged
-  unless a hook is set.
+  `ScannerStack::set_restore_encoder` — e.g. to JSON-escape a rehydrated value
+  placed inside a JSON string in an SSE stream. It sees only the restored
+  original, never the surrounding model text. The default is
+  `RestoreEncoder::identity` (originals verbatim), so restore is unchanged unless
+  a hook is set.
 
 ## [0.1.0]
 
