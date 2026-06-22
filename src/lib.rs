@@ -69,8 +69,8 @@ pub use middleware::{
 };
 pub use scanner::{
     Blocked, Direction, Disposition, HoldBack, NonceStrategy, RestoreEncoder, RestorePolicy,
-    ScanCtx, ScanError, ScanReport, ScanResult, Scanner, ScannerId, ScannerStack, Threshold, Vault,
-    Verdict,
+    ScanCtx, ScanEntry, ScanError, ScanMetrics, ScanReport, ScanResult, Scanner, ScannerId,
+    ScannerStack, Threshold, Vault, Verdict,
 };
 pub use scanners::{
     BanSubstringsScanner, BanTopicsScanner, PiiScanner, RegexRule, RegexScanner, RestoreScanner,

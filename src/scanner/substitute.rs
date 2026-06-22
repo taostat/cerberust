@@ -135,26 +135,34 @@ impl Substituter {
     /// longest-first table is unambiguous.
     #[must_use]
     pub fn substitute(&self, text: &str) -> String {
-        self.substitute_with(text, &RestoreEncoder::identity())
+        self.substitute_with_counting(text, &RestoreEncoder::identity()).0
     }
 
-    /// Like [`Self::substitute`], but each restored original is passed through
-    /// `encoder` before it is spliced in. The surrounding non-sentinel bytes are
-    /// emitted verbatim — only the originals are transformed — so a caller
-    /// splicing into a JSON/SSE stream can JSON-escape exactly the rehydrated
-    /// value without touching bytes the model already encoded. With
-    /// [`RestoreEncoder::identity`] this is byte-identical to [`Self::substitute`].
+    /// The core restore: replace every complete sentinel with its original,
+    /// passing each restored original through `encoder` first, and return
+    /// `(output, (sentinel, count) pairs)` for every sentinel actually spliced
+    /// back. The encoder lets a caller JSON-escape a rehydrated value placed
+    /// inside a JSON/SSE stream (surrounding bytes untouched); the pairs carry
+    /// sentinel **labels** and counts only — never the restored originals. With
+    /// [`RestoreEncoder::identity`] the output is byte-identical to
+    /// [`Self::substitute`].
     #[must_use]
-    pub fn substitute_with(&self, text: &str, encoder: &RestoreEncoder) -> String {
+    pub fn substitute_with_counting(
+        &self,
+        text: &str,
+        encoder: &RestoreEncoder,
+    ) -> (String, Vec<(String, u32)>) {
         let bytes = text.as_bytes();
         let mut out: Vec<u8> = Vec::with_capacity(bytes.len());
+        let mut counts: Vec<u32> = vec![0; self.subs.len()];
         let mut i = 0;
         'scan: while i < bytes.len() {
             if bytes[i] == b'[' {
-                for sub in &self.subs {
+                for (idx, sub) in self.subs.iter().enumerate() {
                     if matches_at(bytes, i, sub) {
                         encoder.encode_into(&sub.original, &mut out);
                         i += sub.sentinel.len();
+                        counts[idx] += 1;
                         continue 'scan;
                     }
                 }
@@ -165,8 +173,30 @@ impl Substituter {
         // The originals were valid UTF-8 strings and the surrounding text is
         // UTF-8; splicing whole-byte sentinels for whole-byte originals on
         // char-aligned boundaries (sentinels are ASCII) preserves UTF-8.
-        String::from_utf8(out)
-            .unwrap_or_else(|e| String::from_utf8_lossy(e.as_bytes()).into_owned())
+        let text = String::from_utf8(out)
+            .unwrap_or_else(|e| String::from_utf8_lossy(e.as_bytes()).into_owned());
+        let restored = self
+            .subs
+            .iter()
+            .zip(counts)
+            .filter(|(_, n)| *n > 0)
+            .map(|(sub, n)| (String::from_utf8_lossy(&sub.sentinel).into_owned(), n))
+            .collect();
+        (text, restored)
+    }
+
+    /// Like [`Self::substitute`], applying `encoder` to each restored original
+    /// before splicing. Output encoding only — no restore counts.
+    #[must_use]
+    pub fn substitute_with(&self, text: &str, encoder: &RestoreEncoder) -> String {
+        self.substitute_with_counting(text, encoder).0
+    }
+
+    /// Like [`Self::substitute`], also returning per-sentinel restore counts
+    /// (sentinel labels + counts only, never originals). Identity encoding.
+    #[must_use]
+    pub fn substitute_counting(&self, text: &str) -> (String, Vec<(String, u32)>) {
+        self.substitute_with_counting(text, &RestoreEncoder::identity())
     }
 
     /// Whether `tail` is a non-empty strict prefix of some sentinel (exact or
@@ -259,6 +289,29 @@ mod tests {
         assert!(s.is_sentinel_prefix(b"[redacted_em"));
         assert!(!s.is_sentinel_prefix(b"[REDACTED_EMAIL_1_abcd1234]"));
         assert!(!s.is_sentinel_prefix(b"[50]"));
+    }
+
+    #[test]
+    fn substitute_counting_reports_per_sentinel_counts() {
+        let s = subber(&[
+            ("[REDACTED_EMAIL_1_abcd1234]", "alice@x.com"),
+            ("[REDACTED_PHONE_1_abcd1234]", "555-1234"),
+        ]);
+        let (text, counts) = s.substitute_counting(
+            "mail [REDACTED_EMAIL_1_abcd1234] twice [REDACTED_EMAIL_1_abcd1234] phone [REDACTED_PHONE_1_abcd1234]",
+        );
+        assert!(text.contains("alice@x.com"));
+        assert!(text.contains("555-1234"));
+        let map: std::collections::BTreeMap<_, _> = counts.into_iter().collect();
+        assert_eq!(map.get("[REDACTED_EMAIL_1_abcd1234]"), Some(&2));
+        assert_eq!(map.get("[REDACTED_PHONE_1_abcd1234]"), Some(&1));
+    }
+
+    #[test]
+    fn substitute_counting_omits_unmatched_sentinels() {
+        let s = subber(&[("[REDACTED_EMAIL_1_abcd1234]", "alice@x.com")]);
+        let (_text, counts) = s.substitute_counting("no sentinel here");
+        assert!(counts.is_empty());
     }
 
     #[test]

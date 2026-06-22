@@ -18,6 +18,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Content-free per-scanner report metrics.** Each `ScanEntry` now carries a
+  `ScanMetrics` alongside its `valid`/`risk` verdict: `detections`, `redacted`,
+  `restored`, `blocked`, a `by_entity_type` map of entity-type label → count, and
+  `latency_us`. The `ScannerStack` derives these in its run loop (timing each
+  `scan` and diffing the vault's type-keyed tallies), so the `Scanner::scan`
+  surface stays a pure `text -> Verdict`. Every field is a count, a verdict, or a
+  closed-vocabulary label — never matched content — so a report is safe to log or
+  emit as metrics wholesale.
 - **`RestoreEncoder` restore hook.** A caller-supplied transform applied to each
   restored original before it is spliced back into the output, installed via
   `ScannerStack::set_restore_encoder` — e.g. to JSON-escape a rehydrated value

@@ -50,6 +50,33 @@ short-circuits: the request is rejected before the model is ever called. That's 
 point of running blocking scanners first — a jailbreak or an over-budget prompt
 never costs you a model call.
 
+### Report metrics
+
+After a run, the stack's **`ScanReport`** records one `ScanEntry` per scanner that
+fired: its `valid`/`risk` verdict plus a content-free **`ScanMetrics`**:
+
+- **`detections`** — matches/entities found (distinct redactions for a transform
+  scanner; `1` on a hit for a block scanner).
+- **`redacted`** — distinct values transformed/replaced.
+- **`restored`** — sentinels put back (restore scanners).
+- **`blocked`** — `1` when the scanner returned a blocking `valid = false` verdict.
+- **`by_entity_type`** — a map of entity **type** label (`EMAIL`, `AWS_ACCESS_KEY`…)
+  to redaction count.
+- **`latency_us`** — wall-clock time spent in that scanner's `scan`.
+
+The stack derives these in its run loop, not the scanner: `scan` stays a pure
+`text -> Verdict`. The loop times each `scan` and diffs the shared vault's
+type-keyed tallies across the call, so a transform scanner's per-type counts come
+from the intern delta and a restore scanner's `restored` from the restore-tally
+delta. The timing is a single `Instant::now()` pair per scanner — cheap relative to
+detection — and always on.
+
+Every field is a count, a verdict, or a closed-vocabulary label (scanner id, entity
+type). **No field ever carries matched content** — not a redacted value, not
+plaintext — so the whole report is safe to log or emit as metrics. A test
+(`report_carries_no_matched_content`) fails if any report field leaks a matched
+value.
+
 ## Middleware
 
 The stack works on text. **Middleware** wraps it around a real model call. The
