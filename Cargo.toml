@@ -9,7 +9,16 @@ repository = "https://github.com/taostat/cerberust"
 readme = "README.md"
 keywords = ["llm", "guardrails", "pii", "security", "scanner"]
 categories = ["text-processing"]
-publish = false
+publish = true
+
+# docs.rs builds with the `wasm` feature so `wasm::WasmScanner` is documented.
+# `prompt-injection` is deliberately excluded: `ort`'s `download-binaries`
+# fetches a prebuilt ONNX Runtime at build time, which fails in the
+# network-sandboxed docs.rs builder. The `--cfg docsrs` flag lets the source
+# gate doc-only attributes on it.
+[package.metadata.docs.rs]
+features = ["wasm"]
+rustdoc-args = ["--cfg", "docsrs"]
 
 [dependencies]
 thiserror = "2.0"
