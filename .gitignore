@@ -9,3 +9,7 @@ Cargo.lock
 # harness runs out of the box.
 benchmarks/.venv/
 benchmarks/results/
+
+# Local-only experiment scratch and git worktrees — never part of the crate.
+scratch-quant/
+.wt/
