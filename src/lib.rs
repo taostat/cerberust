@@ -68,8 +68,9 @@ pub use middleware::{
     Model, ModelSpec, Params, PrivacyTier, StreamModel, TierPolicy,
 };
 pub use scanner::{
-    Blocked, Direction, Disposition, HoldBack, NonceStrategy, RestorePolicy, ScanCtx, ScanError,
-    ScanReport, ScanResult, Scanner, ScannerId, ScannerStack, Threshold, Vault, Verdict,
+    Blocked, Direction, Disposition, HoldBack, NonceStrategy, RestorePolicy, ScanCtx, ScanEntry,
+    ScanError, ScanMetrics, ScanReport, ScanResult, Scanner, ScannerId, ScannerStack, Threshold,
+    Vault, Verdict,
 };
 pub use scanners::{
     BanSubstringsScanner, BanTopicsScanner, PiiScanner, RegexRule, RegexScanner, RestoreScanner,

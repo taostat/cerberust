@@ -12,6 +12,9 @@ pub mod substitute;
 pub mod types;
 pub mod vault;
 
+use std::collections::BTreeMap;
+use std::time::Instant;
+
 use thiserror::Error;
 
 pub use types::{
@@ -136,27 +139,65 @@ pub trait Scanner: Send + Sync {
     }
 }
 
-/// A single scanner's contribution to the [`ScanReport`].
+/// A single scanner's content-free metrics for one run: counts and per-entity-
+/// **type** tallies plus the scanner's own latency. Every field is a count, a
+/// verdict, or an entity-type label — **never** matched content, a redacted
+/// value, or plaintext — so a [`ScanReport`] is safe to log or emit wholesale.
+///
+/// The counts are derived by the [`ScannerStack`] run loop, not reported by the
+/// scanner itself (the [`Scanner::scan`] surface stays a pure
+/// `text -> Verdict`): the loop times each `scan` and diffs the shared
+/// [`Vault`]'s type-keyed tallies across the call. A transform scanner's
+/// `redacted`/`by_entity_type` is the vault-intern delta; a restore scanner's
+/// `restored` is the vault restore-tally delta; a block scanner's `detections`/
+/// `blocked` come from its [`Verdict`].
+#[derive(Debug, Default, Clone, PartialEq)]
+pub struct ScanMetrics {
+    /// Matches or entities this scanner found. For a transform scanner this is
+    /// the number of distinct values redacted; for a block scanner it is `1` on a
+    /// hit, `0` otherwise.
+    pub detections: u32,
+    /// Distinct values this scanner transformed/replaced (redactions). `0` for a
+    /// pure block scanner, which never rewrites.
+    pub redacted: u32,
+    /// Sentinels this scanner put back (restore scanners only).
+    pub restored: u32,
+    /// How many times this scanner blocked: `1` when it returned a [`Block`]
+    /// verdict with `valid = false`, else `0`.
+    pub blocked: u32,
+    /// Per-entity-**type** redaction counts (`EMAIL`, `AWS_ACCESS_KEY`…). Keys are
+    /// type labels, never values, and the map is empty for a block scanner.
+    pub by_entity_type: BTreeMap<String, u32>,
+    /// Wall-clock time spent in this scanner's [`Scanner::scan`], in microseconds.
+    pub latency_us: u64,
+}
+
+/// A single scanner's contribution to the [`ScanReport`]: its verdict summary
+/// (`valid`/`risk`, unchanged) plus the content-free [`ScanMetrics`].
 #[derive(Debug, Clone, PartialEq)]
 pub struct ScanEntry {
     pub scanner: ScannerId,
     pub valid: bool,
     pub risk: f32,
+    pub metrics: ScanMetrics,
 }
 
-/// Per-request provenance: which scanners fired and their verdicts. This is the
-/// "which guards fired" surface for an attestation/debug panel.
+/// Per-request provenance: which scanners fired, their verdicts, and their
+/// content-free [`ScanMetrics`]. This is the "which guards fired" surface for an
+/// attestation/debug panel or a metrics emitter; every field is a count, a
+/// verdict, or an entity-type label, so the whole report is safe to log.
 #[derive(Debug, Default, Clone)]
 pub struct ScanReport {
     entries: Vec<ScanEntry>,
 }
 
 impl ScanReport {
-    fn record(&mut self, scanner: ScannerId, verdict: &Verdict<'_>) {
+    fn record(&mut self, scanner: ScannerId, verdict: &Verdict<'_>, metrics: ScanMetrics) {
         self.entries.push(ScanEntry {
             scanner,
             valid: verdict.valid,
             risk: verdict.risk,
+            metrics,
         });
     }
 
@@ -278,10 +319,19 @@ impl ScannerStack {
         for scanner in &self.input {
             // A malfunction on input is treated as clean-pass here; the
             // middleware owns the fail-open/closed policy.
+            let before = vault_snapshot(&self.ctx.vault);
+            let started = Instant::now();
             let Ok(verdict) = scanner.scan(&current, &mut self.ctx) else {
                 continue;
             };
-            self.report.record(scanner.id(), &verdict);
+            let metrics = derive_metrics(
+                scanner.as_ref(),
+                &verdict,
+                &before,
+                &self.ctx.vault,
+                started.elapsed(),
+            );
+            self.report.record(scanner.id(), &verdict, metrics);
             let blocked = !verdict.valid && scanner.disposition() == Disposition::Block;
             current = verdict.text.into_owned();
             if blocked && self.fail_fast {
@@ -304,10 +354,19 @@ impl ScannerStack {
     pub fn run_output(&mut self, text: &str) -> Result<String, Blocked> {
         let mut current = text.to_owned();
         for scanner in self.output.iter().rev() {
+            let before = vault_snapshot(&self.ctx.vault);
+            let started = Instant::now();
             let Ok(verdict) = scanner.scan(&current, &mut self.ctx) else {
                 continue;
             };
-            self.report.record(scanner.id(), &verdict);
+            let metrics = derive_metrics(
+                scanner.as_ref(),
+                &verdict,
+                &before,
+                &self.ctx.vault,
+                started.elapsed(),
+            );
+            self.report.record(scanner.id(), &verdict, metrics);
             let blocked = !verdict.valid && scanner.disposition() == Disposition::Block;
             current = verdict.text.into_owned();
             if blocked && self.fail_fast {
@@ -319,6 +378,85 @@ impl ScannerStack {
         }
         Ok(current)
     }
+}
+
+/// A point-in-time copy of the vault's per-type intern and restore tallies, taken
+/// before a scanner runs so the run loop can diff it afterwards to attribute
+/// redactions and restores to that scanner. Counts and type labels only.
+struct VaultSnapshot {
+    interned: BTreeMap<String, u32>,
+    restored: BTreeMap<String, u32>,
+}
+
+/// Snapshot the vault's type-keyed tallies. Cheap: a copy of two small maps of
+/// `(type_label, count)`, no plaintext.
+fn vault_snapshot(vault: &Vault) -> VaultSnapshot {
+    VaultSnapshot {
+        interned: vault
+            .interned_counts()
+            .map(|(ty, n)| (ty.to_owned(), n))
+            .collect(),
+        restored: vault
+            .restored_counts()
+            .map(|(ty, n)| (ty.to_owned(), n))
+            .collect(),
+    }
+}
+
+/// Derive one scanner's content-free [`ScanMetrics`] from its verdict and the
+/// vault deltas across its run. A transform scanner's `redacted`/`by_entity_type`
+/// is the intern-count delta; a restore scanner's `restored` is the restore-tally
+/// delta; a block scanner's `detections`/`blocked` come from its verdict. No
+/// matched content is read — only counts and entity-type labels.
+fn derive_metrics(
+    scanner: &dyn Scanner,
+    verdict: &Verdict<'_>,
+    before: &VaultSnapshot,
+    vault: &Vault,
+    latency: std::time::Duration,
+) -> ScanMetrics {
+    let by_entity_type = positive_deltas(&before.interned, vault.interned_counts());
+    let redacted: u32 = by_entity_type.values().sum();
+    let restored: u32 = positive_deltas(&before.restored, vault.restored_counts())
+        .values()
+        .sum();
+
+    // A block scanner judges; a `valid = false` Block verdict is one detected
+    // hit. A transform scanner found whatever it redacted or restored.
+    let (detections, blocked) = match scanner.disposition() {
+        Disposition::Block => {
+            let hit = u32::from(!verdict.valid);
+            (hit, hit)
+        }
+        Disposition::Transform => (redacted + restored, 0),
+    };
+
+    let latency_us = u64::try_from(latency.as_micros()).unwrap_or(u64::MAX);
+    ScanMetrics {
+        detections,
+        redacted,
+        restored,
+        blocked,
+        by_entity_type,
+        latency_us,
+    }
+}
+
+/// The positive per-type increase from `before` to the current `after` tallies —
+/// the redactions (or restores) this scanner alone contributed. A type whose
+/// count did not grow is omitted, so the map carries only this scanner's work.
+fn positive_deltas<'a>(
+    before: &BTreeMap<String, u32>,
+    after: impl Iterator<Item = (&'a str, u32)>,
+) -> BTreeMap<String, u32> {
+    let mut deltas = BTreeMap::new();
+    for (ty, now) in after {
+        let was = before.get(ty).copied().unwrap_or(0);
+        if now > was {
+            deltas.insert(ty.to_owned(), now - was);
+        }
+    }
+    deltas
 }
 
 #[cfg(test)]
@@ -428,9 +566,14 @@ mod tests {
     #[test]
     fn aggregate_risk_is_max_skipping_transformers() {
         let mut report = ScanReport::default();
-        report.record(ScannerId("a"), &Verdict::detected("x", 0.3, 1.0));
-        report.record(ScannerId("b"), &Verdict::transformed(Cow::Borrowed("x")));
-        report.record(ScannerId("c"), &Verdict::detected("x", 0.7, 1.0));
+        let m = ScanMetrics::default();
+        report.record(ScannerId("a"), &Verdict::detected("x", 0.3, 1.0), m.clone());
+        report.record(
+            ScannerId("b"),
+            &Verdict::transformed(Cow::Borrowed("x")),
+            m.clone(),
+        );
+        report.record(ScannerId("c"), &Verdict::detected("x", 0.7, 1.0), m);
         assert!((report.aggregate_risk() - 0.7).abs() < f32::EPSILON);
     }
 }
