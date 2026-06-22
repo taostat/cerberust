@@ -111,22 +111,25 @@ cargo features, since they pull heavy dependencies.)
 
 ## Benchmarks at a glance
 
-Measured head-to-head against `llm-guard` on a shared 290-sample labeled corpus
-(Apple Silicon, macOS). Throughput is hardware-dependent — the **ratios** are the
-durable signal.
+A guardrail's job is to *not corrupt the prompt your user paid for* — so cerberust
+optimizes for **precision** (deterministic regex + checksums), not the recall of a
+fuzzy NER model that over-redacts ordinary words. Measured against `llm-guard` on a
+shared 290-sample corpus (Apple Silicon), comparing **only like-for-like**:
 
-| Scanner | cerberust | llm-guard | speedup |
+**Same detector, faster runtime** — same patterns / same model, so it's a fair race:
+
+| Scanner | cerberust | llm-guard | result |
 |---|---|---|---|
-| PII | 1.34M/s | 65/s | ~20,000× |
-| Secrets | 1.31M/s | 1.4k/s | ~940× |
-| Regex | 7.81M/s | 124.5k/s | ~63× |
-| Ban-substrings | 1.16M/s | 135.5k/s | ~9× |
-| Prompt-injection (same model) | 126/s | 96/s | ~1× (tie) |
+| Regex (same patterns) | 7.81M/s | 124.5k/s | **~63× faster**, identical detection |
+| Ban-substrings (same phrases) | 1.16M/s | 135.5k/s | **~9× faster**, identical detection |
+| Prompt-injection (same model) | 126/s | 96/s | **tie** — byte-identical detection |
 
-On detection, cerberust scores perfect precision/recall on the structured PII and
-secrets corpus where `llm-guard` misses some formats; the ML prompt-injection
-scanner is byte-identical (same model, same threshold). Full methodology and the
-honest caveats are in [docs/benchmarks.md](docs/benchmarks.md).
+**PII & Secrets — a different approach, on purpose.** cerberust's deterministic
+detectors run at **>1.3M/s with perfect precision/recall on structured entities**,
+and don't over-redact — where `llm-guard`'s NER scores 0.75 / 0.89. It's regex vs a
+neural net, so we don't headline a speed multiple; NER leads on free-text names
+cerberust deliberately doesn't attempt. Full methodology + honest caveats:
+[docs/benchmarks.md](docs/benchmarks.md).
 
 ## Install
 

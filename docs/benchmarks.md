@@ -1,10 +1,16 @@
 # Benchmarks
 
-cerberust is measured head-to-head against
-[`llm-guard`](https://github.com/protectai/llm-guard) (Python) on a **shared
-labeled corpus** — same scanners, same detection job — for both **speed**
-(samples/sec) and **detection** (precision/recall). The numbers below are real,
-reproducible, and come with their caveats stated.
+A guardrail's job is to **not corrupt the prompt your user paid for**. A
+wrongly-redacted word is the expensive error; a missed free-text name is only a
+convenience gap. So cerberust optimizes for **precision** — deterministic regex +
+checksums — over the recall of a fuzzy NER model that over-redacts ordinary words.
+
+These numbers measure cerberust against
+[`llm-guard`](https://github.com/protectai/llm-guard) (Python) on a shared labeled
+corpus, and we **only race like-for-like**: where both sides run the same algorithm
+or model, it's a fair speed comparison; where the *approaches* differ (our regex +
+checksums vs its NER), we report accuracy and our own throughput — not a speed
+multiple against a neural net. All numbers are real, reproducible, and caveated.
 
 > These are measured numbers from one machine (Apple Silicon, macOS). Absolute
 > throughput is hardware- and load-dependent — **the speedup ratios are the durable
@@ -17,20 +23,39 @@ injections, and the rest clean or near-miss negatives. Both implementations read
 *same* `corpus.jsonl` and score precision/recall against the *same* per-sample
 ground-truth labels.
 
-## Results
+## Same detector, faster runtime (the like-for-like races)
 
-| Scanner (vs llm-guard) | cerberust speed | llm-guard speed | speedup | cerberust P/R | llm-guard P/R |
-|---|---|---|---|---|---|
-| PII (Anonymize) | 1.34M/s | 65/s | ~20,500× | 1.00 / 1.00 | 0.75 / 0.89 |
-| Secrets | 1.31M/s | 1.4k/s | ~940× | 1.00 / 1.00 | 1.00 / 0.45 |
-| Regex | 7.81M/s | 124.5k/s | ~63× | 1.00 / 1.00 | 1.00 / 1.00 |
-| Ban-substrings | 1.16M/s | 135.5k/s | ~9× | 1.00 / 0.27 | 1.00 / 0.27 |
-| Prompt-injection | 126/s | 96/s | ~1× | 0.30 / 0.93 | 0.30 / 0.93 |
+Where both sides run the *same* algorithm or model, detection is identical — the
+only variable is speed:
 
-*Speed is samples/sec over the whole corpus. The deterministic scanners are timed
-across repeated warm passes (after the one-time regex compilation); the ML scanner is
-timed once per sample, where inference dominates. P/R is precision/recall against the
-ground-truth label.*
+| Scanner | cerberust | llm-guard | speedup | detection |
+|---|---|---|---|---|
+| Regex (same patterns) | 7.81M/s | 124.5k/s | ~63× | identical — 1.00 / 1.00 both |
+| Ban-substrings (same phrases) | 1.16M/s | 135.5k/s | ~9× | identical — 1.00 / 0.27 both |
+| Prompt-injection (same model) | 126/s | 96/s | ~1× (tie) | byte-identical — same 28 TP / 65 FP / 2 FN / 195 TN |
+
+## PII & Secrets — a different approach, on purpose
+
+cerberust detects PII and secrets with deterministic regex + checksums (Luhn, IPv4
+range, entropy backstop); `llm-guard` runs a spaCy NER pipeline (PII) and a
+multi-rule Python scanner (Secrets). The approaches differ, so we don't headline a
+speed multiple against a neural net. What the deterministic approach delivers on the
+**structured** corpus:
+
+| Scanner | cerberust throughput | cerberust P/R | llm-guard P/R (same corpus) |
+|---|---|---|---|
+| PII (structured) | 1.34M/s | 1.00 / 1.00 | 0.75 / 0.89 |
+| Secrets | 1.31M/s | 1.00 / 1.00 | 1.00 / 0.45 |
+
+Perfect precision and recall on entities with a recognizable shape — and, unlike an
+NER pipeline, **no over-redaction of ordinary words**. NER's strength is free-text
+names and addresses, which cerberust deliberately doesn't attempt (it's the
+precision-for-recall trade a guardrail shouldn't make). Need free-text name coverage?
+Pair cerberust with a dedicated NER tool.
+
+*Speed is samples/sec over the corpus — deterministic scanners across warm passes
+(after one-time regex compilation), the ML scanner once per sample where inference
+dominates. P/R is precision/recall against the ground-truth labels.*
 
 ## What each row actually compares
 
@@ -53,25 +78,24 @@ point of the methodology.
   a five-phrase keyword list only covers a third of the injection set — the honest
   ceiling of a literal-substring baseline, and exactly why the ML scanner exists.
 
-- **PII / Secrets — different detectors, same job.** cerberust uses regex + checksums
-  (Luhn, IPv4 range, entropy backstop); `llm-guard` uses Presidio NER (PII) and
-  detect-secrets (Secrets). Detection differs because the *approaches* differ, so
-  these rows compare both speed **and** detection quality on structured PII /
-  known-format secrets.
+- **PII / Secrets — different detectors, not a speed race.** cerberust uses regex +
+  checksums (Luhn, IPv4 range, entropy backstop); `llm-guard` uses Presidio NER (PII)
+  and detect-secrets (Secrets). Because the *approaches* differ, we don't pit them on
+  speed — we report cerberust's own throughput and the detection quality each reaches
+  on the structured corpus. cerberust is perfect there and doesn't over-redact; NER
+  leads on free-text names cerberust deliberately doesn't attempt.
 
 ## Summary
 
-cerberust wins decisively on the deterministic scanners and ties the ML scanner.
-
-- **Speed:** 9× to ~20,000× faster on every regex/checksum/literal scanner. The PII
-  and Secrets gaps are largest because `llm-guard` runs a spaCy NER pipeline (PII)
-  and a multi-rule Python scanner (Secrets) where cerberust runs compiled regex +
-  checksums.
-- **Detection parity:** on this structured corpus cerberust matches or beats
-  `llm-guard`. It's perfect (P=R=1.0) on PII and Secrets; `llm-guard`'s Presidio NER
-  misses/over-flags some structured PII (0.75 / 0.89) and its detect-secrets recall
-  is 0.45 (it doesn't recognize several OpenAI / Stripe / labelled-`key=value`
-  forms). The ML prompt-injection scanner is **identical** to `llm-guard`'s.
+- **Like-for-like speed:** where the algorithm or model is the same, cerberust's Rust
+  implementation is **~9× (ban-substrings) to ~63× (regex)** faster, and the ML
+  prompt-injection scanner **ties** `llm-guard` — byte-identical detection, runtime a
+  wash.
+- **PII / Secrets — precision by design:** on the structured corpus the deterministic
+  detectors hit perfect precision/recall and don't over-redact, where `llm-guard`'s
+  NER scores 0.75 / 0.89 (PII) and detect-secrets recalls 0.45. We don't headline a
+  speed multiple here — it's regex vs a neural net — but the throughput is high
+  (>1.3M/s) and, for a guardrail, the precision is the point.
 
 ## The honest caveats
 
