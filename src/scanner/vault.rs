@@ -1,33 +1,98 @@
 //! The request-scoped vault: a placeholder↔original map with a per-type
-//! counter and a per-request nonce, zeroized on drop.
+//! counter and a per-value sentinel suffix, zeroized on drop.
 //!
 //! The vault holds the one piece of request state that must never leave the
-//! host — the map from each `[REDACTED_<TYPE>_<N>_<nonce>]` sentinel back
+//! host — the map from each `[REDACTED_<TYPE>_<N>_<suffix>]` sentinel back
 //! to the original plaintext. Any scanner may intern into it (PII, secrets);
 //! restore reads it on the output path. It is a *stack capability* threaded on
 //! [`ScanCtx`](crate::ScanCtx), not the private field of one scanner.
 //!
-//! Each request mints a fresh nonce baked into every sentinel it emits. The
-//! nonce namespaces the request's sentinels so a caller cannot pre-image one
-//! (embed a guessed sentinel in their own prompt and have the restore pass
-//! splice a *different* request's original into the response): without the
-//! per-request nonce the sentinel is guessable, with it the caller would have
-//! to predict the request's random token.
+//! The sentinel suffix namespaces a request's sentinels so a caller cannot
+//! pre-image one (embed a guessed sentinel in their own prompt and have the
+//! restore pass splice a *different* request's original into the response).
+//! Two strategies mint that suffix, selected by [`NonceStrategy`]:
+//!
+//! - [`NonceStrategy::Random`] (default): one random nonce per request, shared
+//!   by every sentinel it emits. Unguessable, but the same value redacts to a
+//!   different sentinel on each request.
+//! - [`NonceStrategy::Deterministic`]: the suffix is `HMAC(key, value)[:n]`, a
+//!   pure function of `(key, value)` — the same value under the same key always
+//!   yields the same suffix. A replayed conversation prefix therefore redacts
+//!   byte-identically turn after turn (it interns the same values in the same
+//!   order, so the per-type counter matches too), preserving upstream prompt
+//!   caching, while the sentinel stays unguessable. It is a *keyed* HMAC, never
+//!   a bare hash: low-entropy PII (emails, phones, SSNs) would otherwise be
+//!   brute-forceable out of its placeholder. The counter prefix is retained:
+//!   it keeps the `[REDACTED_<TYPE>_<counter>_<suffix>]` shape the restore
+//!   parser expects and disambiguates the rare truncated-HMAC collision between
+//!   two distinct values of one type.
 
 use std::collections::HashMap;
 
+use hmac::{Hmac, Mac};
 use rand::Rng;
-use zeroize::Zeroize;
+use sha2::Sha256;
+use zeroize::{Zeroize, Zeroizing};
 
-/// Hex characters one request's sentinel nonce carries. Kept in a JSON-escape-
-/// free alphabet (hex digits) so a sentinel is byte-identical inside a JSON
-/// string and a raw byte scan needs no JSON parse.
-const NONCE_HEX_LEN: usize = 8;
+/// Hex characters a sentinel suffix carries. Kept in a JSON-escape-free
+/// alphabet (hex digits) so a sentinel is byte-identical inside a JSON string
+/// and a raw byte scan needs no JSON parse.
+const SUFFIX_HEX_LEN: usize = 8;
+
+/// How the vault mints the per-value suffix baked into every sentinel. The
+/// caller selects this; [`NonceStrategy::Random`] is the default and the only
+/// behaviour unless deterministic mode is opted in.
+pub enum NonceStrategy {
+    /// One random nonce per request, shared by every sentinel. The same value
+    /// redacts to a different sentinel on each request.
+    Random,
+    /// `HMAC(key, value)[:n]` per value: the same value under the same key
+    /// always yields the same suffix (cache-stable across requests). `key` is
+    /// caller-owned secret bytes; cerberust is agnostic to its scope and where
+    /// it comes from. The key is zeroized on drop.
+    ///
+    /// The key MUST be a non-empty high-entropy secret: an empty or guessable
+    /// key collapses the HMAC to an effectively unkeyed hash, which is
+    /// brute-forceable for low-entropy PII. cerberust does not police this —
+    /// supplying the key well is the caller's responsibility.
+    Deterministic { key: Zeroizing<Vec<u8>> },
+}
+
+impl NonceStrategy {
+    /// Deterministic mode keyed by caller-owned secret `key`. See
+    /// [`NonceStrategy::Deterministic`] for the non-empty-key requirement.
+    #[must_use]
+    pub fn deterministic(key: &[u8]) -> Self {
+        Self::Deterministic {
+            key: Zeroizing::new(key.to_vec()),
+        }
+    }
+}
+
+/// The vault's resolved per-request suffix source — a [`NonceStrategy`] with its
+/// random nonce already minted, so there is no "Random-but-no-nonce" state.
+enum Suffix {
+    /// One nonce reused by every sentinel this request.
+    Fixed(String),
+    /// `HMAC(key, value)` per value; the key is zeroized on drop.
+    Keyed(Zeroizing<Vec<u8>>),
+}
+
+impl Suffix {
+    /// The `SUFFIX_HEX_LEN`-hex suffix for `value`. Fixed reuses the per-request
+    /// nonce; Keyed derives `HMAC(key, value)[:n]` so the same value under the
+    /// same key is byte-identical across vaults.
+    fn for_value(&self, value: &str) -> String {
+        match self {
+            Suffix::Fixed(nonce) => nonce.clone(),
+            Suffix::Keyed(key) => keyed_suffix(key, value),
+        }
+    }
+}
 
 /// Maps a redaction sentinel to the original plaintext it stands in for, and
 /// allocates a stable per-type counter so two distinct values of the same type
-/// stay distinct (`[REDACTED_EMAIL_1_<nonce>]` vs `[REDACTED_EMAIL_2_<nonce>]`).
-#[derive(Debug)]
+/// stay distinct (`[REDACTED_EMAIL_1_<suffix>]` vs `[REDACTED_EMAIL_2_<suffix>]`).
 pub struct Vault {
     /// sentinel → original plaintext.
     by_placeholder: HashMap<String, String>,
@@ -42,16 +107,37 @@ pub struct Vault {
     restorable: std::collections::HashSet<String>,
     /// Next counter to allocate per entity type.
     counters: HashMap<String, u32>,
-    /// Per-request random suffix every sentinel carries.
-    nonce: String,
+    /// How each sentinel's suffix is derived (random nonce already minted).
+    suffix: Suffix,
 }
 
 impl Vault {
-    /// Build a vault with a freshly-minted per-request nonce, derived from the
-    /// thread RNG so two concurrent requests never share a sentinel namespace.
+    /// Build a vault with a freshly-minted per-request random nonce, derived
+    /// from the thread RNG so two concurrent requests never share a sentinel
+    /// namespace.
     #[must_use]
     pub fn new() -> Self {
         Self::with_nonce(random_nonce())
+    }
+
+    /// Build a deterministic vault keyed by caller-owned secret `key`: every
+    /// sentinel suffix is `HMAC(key, value)[:n]`, so the same value under the
+    /// same key redacts byte-identically across independent vaults. The key is
+    /// copied into the vault and zeroized on drop.
+    #[must_use]
+    pub fn deterministic(key: &[u8]) -> Self {
+        Self::with_strategy(NonceStrategy::deterministic(key))
+    }
+
+    /// Build a vault under an explicit [`NonceStrategy`] — the general entry
+    /// point behind [`Self::new`] (Random) and [`Self::deterministic`].
+    #[must_use]
+    pub fn with_strategy(strategy: NonceStrategy) -> Self {
+        let suffix = match strategy {
+            NonceStrategy::Random => Suffix::Fixed(random_nonce()),
+            NonceStrategy::Deterministic { key } => Suffix::Keyed(key),
+        };
+        Self::with_suffix(suffix)
     }
 
     /// Build a vault with an explicit nonce. Test-only escape hatch so a test
@@ -59,19 +145,27 @@ impl Vault {
     /// one via [`Self::new`].
     #[must_use]
     pub fn with_nonce(nonce: String) -> Self {
+        Self::with_suffix(Suffix::Fixed(nonce))
+    }
+
+    fn with_suffix(suffix: Suffix) -> Self {
         Self {
             by_placeholder: HashMap::new(),
             by_value: HashMap::new(),
             restorable: std::collections::HashSet::new(),
             counters: HashMap::new(),
-            nonce,
+            suffix,
         }
     }
 
-    /// The request's sentinel nonce. For audit and tests only.
+    /// The request's random nonce, or `None` in deterministic mode (where the
+    /// suffix is per-value, not per-request). For audit and tests only.
     #[must_use]
-    pub fn nonce(&self) -> &str {
-        &self.nonce
+    pub fn nonce(&self) -> Option<&str> {
+        match &self.suffix {
+            Suffix::Fixed(nonce) => Some(nonce),
+            Suffix::Keyed(_) => None,
+        }
     }
 
     /// Whether the vault holds any redaction. An empty vault is the
@@ -105,9 +199,10 @@ impl Vault {
             }
             return existing.clone();
         }
+        let suffix = self.suffix.for_value(original);
         let counter = self.counters.entry(ty.to_owned()).or_insert(0);
         *counter += 1;
-        let placeholder = format!("[REDACTED_{ty}_{counter}_{}]", self.nonce);
+        let placeholder = format!("[REDACTED_{ty}_{counter}_{suffix}]");
         self.by_placeholder
             .insert(placeholder.clone(), original.to_owned());
         self.by_value
@@ -145,15 +240,42 @@ impl Vault {
 
 impl Default for Vault {
     /// Mints a fresh random nonce, same as [`Self::new`] — there is no
-    /// nonce-less vault, so `default()` is never a footgun.
+    /// suffix-less vault, so `default()` is never a footgun.
     fn default() -> Self {
         Self::new()
     }
 }
 
+impl std::fmt::Debug for Vault {
+    /// Reports only counts and mode — never the originals, nonce, or key, which
+    /// are the host-side secret this type exists to hold.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let mode = match self.suffix {
+            Suffix::Fixed(_) => "Random",
+            Suffix::Keyed(_) => "Deterministic",
+        };
+        f.debug_struct("Vault")
+            .field("entries", &self.by_placeholder.len())
+            .field("mode", &mode)
+            .finish_non_exhaustive()
+    }
+}
+
+/// `HMAC-SHA256(key, value)` truncated to `SUFFIX_HEX_LEN` hex chars.
+fn keyed_suffix(key: &[u8], value: &str) -> String {
+    // `new_from_slice` never errors for HMAC — any key length is valid — so the
+    // `let...else` arm is unreachable.
+    let Ok(mut mac) = Hmac::<Sha256>::new_from_slice(key) else {
+        unreachable!("HMAC accepts any key length")
+    };
+    mac.update(value.as_bytes());
+    let tag = mac.finalize().into_bytes();
+    hex::encode(&tag[..SUFFIX_HEX_LEN / 2])
+}
+
 /// An 8-hex-char random nonce from the thread RNG.
 fn random_nonce() -> String {
-    let bytes: [u8; NONCE_HEX_LEN / 2] = rand::thread_rng().gen();
+    let bytes: [u8; SUFFIX_HEX_LEN / 2] = rand::thread_rng().gen();
     hex::encode(bytes)
 }
 
@@ -221,8 +343,9 @@ mod tests {
     #[test]
     fn nonce_is_eight_hex_chars() {
         let v = Vault::new();
-        assert_eq!(v.nonce().len(), NONCE_HEX_LEN);
-        assert!(v.nonce().bytes().all(|b| b.is_ascii_hexdigit()));
+        let nonce = v.nonce().unwrap();
+        assert_eq!(nonce.len(), SUFFIX_HEX_LEN);
+        assert!(nonce.bytes().all(|b| b.is_ascii_hexdigit()));
     }
 
     #[test]
@@ -245,5 +368,90 @@ mod tests {
         let _ = v.intern("EMAIL", "secret@example.com", true);
         assert!(!v.is_empty());
         drop(v);
+    }
+
+    /// The suffix slug of a `[REDACTED_<TYPE>_<counter>_<suffix>]` sentinel.
+    fn suffix_of(sentinel: &str) -> &str {
+        sentinel
+            .strip_suffix(']')
+            .and_then(|s| s.rsplit_once('_'))
+            .map_or("", |(_, suffix)| suffix)
+    }
+
+    #[test]
+    fn deterministic_same_key_same_sentinel_in_replay_order() {
+        // A replayed prefix interns the same values in the same order, so the
+        // counter matches too and the full sentinel is byte-identical.
+        let key = b"conversation-key";
+        let mut a = Vault::deterministic(key);
+        let mut b = Vault::deterministic(key);
+        let sa = a.intern("EMAIL", "alice@x.com", true);
+        let sb = b.intern("EMAIL", "alice@x.com", true);
+        assert_eq!(sa, sb, "same value + same key + same order must match");
+    }
+
+    #[test]
+    fn deterministic_suffix_is_value_keyed_independent_of_order() {
+        // The suffix is `HMAC(key, value)` — a pure function of the value — so
+        // it is identical even when the counter differs across interning orders.
+        let key = b"conversation-key";
+        let mut a = Vault::deterministic(key);
+        let mut b = Vault::deterministic(key);
+        a.intern("EMAIL", "bob@y.com", true); // shift `a`'s counter
+        let sa = a.intern("EMAIL", "alice@x.com", true);
+        let sb = b.intern("EMAIL", "alice@x.com", true);
+        assert_eq!(suffix_of(&sa), suffix_of(&sb));
+    }
+
+    #[test]
+    fn deterministic_different_keys_different_sentinels() {
+        let mut a = Vault::deterministic(b"key-one");
+        let mut b = Vault::deterministic(b"key-two");
+        let sa = a.intern("EMAIL", "alice@x.com", true);
+        let sb = b.intern("EMAIL", "alice@x.com", true);
+        assert_ne!(sa, sb, "different keys must diverge for the same value");
+    }
+
+    #[test]
+    fn deterministic_suffix_is_eight_hex_chars() {
+        let mut v = Vault::deterministic(b"k");
+        let s = v.intern("EMAIL", "alice@x.com", true);
+        let suffix = s
+            .strip_prefix("[REDACTED_EMAIL_1_")
+            .and_then(|s| s.strip_suffix(']'))
+            .unwrap();
+        assert_eq!(suffix.len(), SUFFIX_HEX_LEN);
+        assert!(suffix.bytes().all(|b| b.is_ascii_hexdigit()));
+    }
+
+    #[test]
+    fn deterministic_nonce_accessor_is_none() {
+        let v = Vault::deterministic(b"k");
+        assert_eq!(v.nonce(), None);
+    }
+
+    #[test]
+    fn deterministic_round_trips_the_sentinel() {
+        let mut v = Vault::deterministic(b"conversation-key");
+        let p = v.intern("EMAIL", "alice@x.com", true);
+        assert_eq!(v.original_for(&p), Some("alice@x.com"));
+        assert!(v.is_restorable(&p));
+    }
+
+    #[test]
+    fn deterministic_distinct_values_distinct_suffixes() {
+        let mut v = Vault::deterministic(b"k");
+        let a = v.intern("EMAIL", "alice@x.com", true);
+        let b = v.intern("EMAIL", "bob@y.com", true);
+        assert_ne!(a, b);
+    }
+
+    #[test]
+    fn deterministic_dedupes_same_value() {
+        let mut v = Vault::deterministic(b"k");
+        let a = v.intern("EMAIL", "alice@x.com", true);
+        let a2 = v.intern("EMAIL", "alice@x.com", true);
+        assert_eq!(a, a2);
+        assert_eq!(v.len(), 1);
     }
 }

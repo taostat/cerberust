@@ -26,6 +26,16 @@ zeroize = { version = "1.8", features = ["derive"] }
 rand = "0.8"
 hex = "0.4"
 
+# Keyed-deterministic sentinel suffixes (the Vault's `NonceStrategy::Deterministic`
+# mode): the suffix is `HMAC-SHA256(key, value)` truncated to hex. It must be a
+# *keyed* MAC, never a bare hash — low-entropy PII (emails, phones, SSNs) is
+# brute-forceable from an unkeyed hash. `hmac` + `sha2` are the RustCrypto
+# reference implementations, share the `digest` 0.10 trait crate (versions unify
+# in Cargo.lock, `cargo deny` stays clean), and `sha2` carries no system
+# dependency.
+hmac = "0.12"
+sha2 = "0.10"
+
 # The WASM guard runner (feature `wasm`). `wasmtime` is the reference
 # WebAssembly Component Model runtime; it loads a user-submitted guard component
 # and — instantiated against an import-less linker — runs it as a pure

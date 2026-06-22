@@ -17,7 +17,7 @@ use thiserror::Error;
 pub use types::{
     Direction, Disposition, HoldBack, RestorePolicy, ScanResult, ScannerId, Threshold, Verdict,
 };
-pub use vault::Vault;
+pub use vault::{NonceStrategy, Vault};
 
 /// An error a scanner may return. Distinct from a `Block` verdict: a `ScanError`
 /// is a *malfunction* (a detector failed), whereas `valid = false` is a working
@@ -54,6 +54,14 @@ impl ScanCtx {
             vault: Vault::new(),
             prompt: None,
         }
+    }
+
+    /// Replace the vault — the seam for selecting a [`NonceStrategy`], e.g. a
+    /// per-conversation [`Vault::deterministic`] for cache-stable redaction.
+    #[must_use]
+    pub fn with_vault(mut self, vault: Vault) -> Self {
+        self.vault = vault;
+        self
     }
 
     /// Set the original prompt (called once on the input path).
@@ -193,10 +201,19 @@ pub struct ScannerStack {
 }
 
 impl ScannerStack {
-    /// Build a stack. Scanners are partitioned by their declared direction;
-    /// `input` order is preserved, `output` is applied in reverse (LIFO).
+    /// Build a stack with a default context. Scanners are partitioned by their
+    /// declared direction; `input` order is preserved, `output` is applied in
+    /// reverse (LIFO).
     #[must_use]
     pub fn new(scanners: Vec<Box<dyn Scanner>>, fail_fast: bool) -> Self {
+        Self::with_ctx(scanners, fail_fast, ScanCtx::new())
+    }
+
+    /// Build a stack over a caller-supplied context — the seam for injecting a
+    /// vault with a chosen [`NonceStrategy`] (e.g. a per-conversation
+    /// [`Vault::deterministic`]) before the request runs.
+    #[must_use]
+    pub fn with_ctx(scanners: Vec<Box<dyn Scanner>>, fail_fast: bool, ctx: ScanCtx) -> Self {
         let mut input = Vec::new();
         let mut output = Vec::new();
         for scanner in scanners {
@@ -209,7 +226,7 @@ impl ScannerStack {
             input,
             output,
             fail_fast,
-            ctx: ScanCtx::new(),
+            ctx,
             report: ScanReport::default(),
         }
     }
@@ -374,6 +391,38 @@ mod tests {
         let mut stack = ScannerStack::new(vec![Box::new(BlockBad), Box::new(Upper)], true);
         assert_eq!(stack.run_input("all good").unwrap(), "ALL GOOD");
         assert!(stack.report().aggregate_risk().abs() < f32::EPSILON);
+    }
+
+    /// A scanner that interns its whole input as an EMAIL, so a test can observe
+    /// which `NonceStrategy` the stack's vault carries.
+    struct InternAll;
+    impl Scanner for InternAll {
+        fn id(&self) -> ScannerId {
+            ScannerId("test:intern")
+        }
+        fn direction(&self) -> Direction {
+            Direction::Input
+        }
+        fn disposition(&self) -> Disposition {
+            Disposition::Transform
+        }
+        fn scan<'a>(&self, text: &'a str, ctx: &mut ScanCtx) -> ScanResult<'a> {
+            let s = ctx.vault.intern("EMAIL", text, true);
+            Ok(Verdict::transformed(Cow::Owned(s)))
+        }
+    }
+
+    #[test]
+    fn with_ctx_threads_a_deterministic_vault() {
+        let key = b"conversation-key";
+        let run = |text: &str| {
+            let ctx = ScanCtx::new().with_vault(Vault::deterministic(key));
+            let mut stack = ScannerStack::with_ctx(vec![Box::new(InternAll)], true, ctx);
+            stack.run_input(text).unwrap()
+        };
+        // Same value + same key across two independent stacks → identical sentinel.
+        assert_eq!(run("alice@x.com"), run("alice@x.com"));
+        assert_ne!(run("alice@x.com"), run("bob@y.com"));
     }
 
     #[test]
