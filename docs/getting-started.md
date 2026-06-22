@@ -156,6 +156,14 @@ The guarantee: the concatenation of the streamed output equals what you'd get by
 scanning the entire response at once. Streaming changes *when* bytes come out, never
 *what* comes out. See [Concepts → streaming hold-back](concepts.md#streaming-hold-back).
 
+To drive the runner yourself frame-by-frame — e.g. over per-frame SSE callbacks —
+use `StreamOutput` directly: `StreamOutput::new(&stack)`, then `runner.push(&mut
+stack, chunk)?` per frame and `runner.finish(&mut stack)?` at the end. The runner
+holds no long-lived borrow on the stack between calls. When you splice restored
+values into a structured stream, install a `RestoreEncoder` on the stack to escape
+each restored original (e.g. JSON-escaping a value placed inside a JSON string);
+the default leaves originals verbatim.
+
 ## Where to next
 
 - **[Core concepts](concepts.md)** — the full mental model.
