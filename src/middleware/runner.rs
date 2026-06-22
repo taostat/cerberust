@@ -79,14 +79,14 @@ impl Middleware for GuardrailRunner {
         sink: &mut ChunkSink<'_>,
     ) -> Result<(), MiddlewareError> {
         let mut stack = lock(&self.stack);
-        let mut runner = StreamOutput::new(&mut stack);
+        let mut runner = StreamOutput::new(&stack);
         for chunk in next {
-            let safe = runner.push(&chunk?)?;
+            let safe = runner.push(&mut stack, &chunk?)?;
             if !safe.is_empty() {
                 sink(safe)?;
             }
         }
-        let tail = runner.finish()?;
+        let tail = runner.finish(&mut stack)?;
         if !tail.is_empty() {
             sink(tail)?;
         }
