@@ -88,7 +88,7 @@ Ships in the default build (no extra cargo feature).
 ## Performance
 
 On the benchmark corpus, the secret scanner runs at **~1.31M samples/sec** with
-**perfect precision and recall (1.00 / 1.00)**, against `llm-guard`'s
-detect-secrets at ~1.4k/s and 0.45 recall on the same corpus (it doesn't recognize
-several of the OpenAI / Stripe / labelled `key=value` forms). See
+**perfect precision and recall (1.00 / 1.00)**. On detection, `llm-guard`'s
+detect-secrets recalls only 0.45 on the same corpus — it doesn't recognize several of
+the OpenAI / Stripe / labelled `key=value` forms cerberust catches. See
 [benchmarks](../benchmarks.md) for the full table and methodology.
