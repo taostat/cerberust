@@ -50,7 +50,7 @@ for placeholders that pass **two** tests:
 
 1. **It's an entity type this restorer owns.** The scanner is built with a set of
    types (`for_pii()` owns `EMAIL`, `PHONE`, `US_SSN`, `IP_ADDRESS`,
-   `CREDIT_CARD`). A placeholder of any other type is left alone — so a secret,
+   `CREDIT_CARD`, `IBAN`). A placeholder of any other type is left alone — so a secret,
    owned by no PII restorer, stays masked.
 2. **It was interned round-trip.** A value the model generated and that was masked
    one-way on the output path shares the entity type but isn't restorable, so it's
@@ -84,6 +84,59 @@ let restore = RestoreScanner::for_types(
 
 **Default:** pair it with any round-trip scanner. To make a redaction one-way, simply
 don't give its type to a restorer.
+
+## Cache-stable deterministic redaction
+
+A placeholder carries a per-value suffix so a caller can't *guess* one and trick the
+restore pass into splicing a different request's data into the reply. By default that
+suffix is a **fresh random nonce per request**: unguessable, but the same email
+redacts to a *different* placeholder every request. That's the safe default, and for
+single-shot calls it's all you want.
+
+For a **multi-turn conversation**, randomness has a cost. Each turn you resend the
+prefix to the model — and if `alice@example.com` redacts to a different placeholder
+every turn, the redacted prefix changes every turn, and the provider's prompt cache
+misses on text that should have been a hit. You pay full price to re-process a prefix
+the provider already has.
+
+Deterministic mode fixes that. The suffix becomes a **keyed function of the value** —
+`HMAC(key, value)` truncated — so the same value under the same key always produces
+the same placeholder, byte-identical across requests:
+
+```rust
+use cerberust::{PiiScanner, RestoreScanner, ScanCtx, ScannerStack, Scanner, Vault};
+
+// One key per conversation (caller-owned secret bytes). The same value redacts to
+// the same placeholder on every turn, so the redacted prefix is cache-stable.
+let key = b"per-conversation-secret";
+let ctx = ScanCtx::new().with_vault(Vault::deterministic(key));
+
+let scanners: Vec<Box<dyn Scanner>> = vec![
+    Box::new(PiiScanner::new()),
+    Box::new(RestoreScanner::for_pii()),
+];
+let mut stack = ScannerStack::with_ctx(scanners, true, ctx);
+
+let redacted = stack.run_input("mail alice@example.com")?;
+// Re-running the same prefix on the next turn, under the same key, yields the
+// exact same `[REDACTED_EMAIL_1_…]` — the provider's prompt cache stays warm.
+# Ok::<(), cerberust::Blocked>(())
+```
+
+Two things to keep honest about it:
+
+- **The key must be a real secret.** The suffix is a *keyed* HMAC, not a bare hash,
+  precisely because low-entropy PII — an email, a phone number, an SSN — would be
+  brute-forceable out of an unkeyed digest. Supply a non-empty, high-entropy,
+  per-conversation key. cerberust does not police this; supplying the key well is
+  your responsibility.
+- **It's opt-in.** `Vault::new()` (the default) stays random. You select deterministic
+  mode explicitly with `Vault::deterministic(key)` (or `NonceStrategy::deterministic`)
+  and thread it in via `ScanCtx::new().with_vault(...)` / `ScannerStack::with_ctx(...)`.
+
+Restore works identically either way — it matches placeholders exactly, whatever
+minted the suffix. Deterministic mode changes only how the suffix is derived, never
+the round-trip semantics.
 
 ## Performance
 

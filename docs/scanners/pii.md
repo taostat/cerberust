@@ -9,8 +9,8 @@ app for a model provider, that PII is in a third party's logs, and you didn't
 choose that — a user did, mid-sentence.
 
 `PiiScanner` catches structured PII before it leaves: **email addresses, phone
-numbers, credit card numbers, IP addresses, and US Social Security numbers.** It
-replaces each one with a placeholder the model can't read, and — by default — puts
+numbers, credit card numbers, IP addresses, US Social Security numbers, and IBANs.**
+It replaces each one with a placeholder the model can't read, and — by default — puts
 the real value back in the reply so your user still sees their own data.
 
 ## Why you'd use it
@@ -55,6 +55,9 @@ checksum** so it doesn't over-match:
   `999.1.1.1` is rejected).
 - **Credit card** — 13–19 digits, optionally space/hyphen grouped, then gated by
   the **Luhn checksum**, so a random 16-digit order number isn't mistaken for a card.
+- **IBAN** — an ISO 13616 international bank account number, gated by the
+  country-specific length **and** the **mod-97 checksum**, so a random `GB00…`
+  string isn't mistaken for an account.
 
 Each detected region becomes a **span** (a byte range + an entity type +
 confidence). Overlapping spans are resolved into a clean, non-overlapping set that
@@ -92,7 +95,7 @@ assert_eq!(output_pii.direction(), Direction::Output);
 
 Pair an input `PiiScanner` with `RestoreScanner::for_pii()` in the same stack to
 complete the round-trip. The entity types it restores are `EMAIL`, `PHONE`,
-`US_SSN`, `IP_ADDRESS`, and `CREDIT_CARD`.
+`US_SSN`, `IP_ADDRESS`, `CREDIT_CARD`, and `IBAN`.
 
 **Default:** on. The PII scanner is part of the standard stack.
 

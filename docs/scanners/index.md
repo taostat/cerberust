@@ -9,8 +9,8 @@ configuration and performance.
 These detect sensitive data and replace it with a placeholder — round-trip (restored
 in the reply) or one-way (never restored).
 
-- **[PiiScanner](pii.md)** — personal data: emails, phones, credit cards, IPs, SSNs.
-  *On by default, restores by default.*
+- **[PiiScanner](pii.md)** — personal data: emails, phones, credit cards, IPs, SSNs,
+  IBANs. *On by default, restores by default.*
 - **[SecretScanner](secrets.md)** — API keys, tokens, private keys, labelled
   secrets. *On by default, one-way.*
 - **[RegexScanner](regex.md)** — your own sensitive formats, from patterns you

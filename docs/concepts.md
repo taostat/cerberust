@@ -99,6 +99,22 @@ A few properties make it safe:
 The vault is shared across the whole stack and both directions: input scanners
 intern into it, the restore scanner reads from it on output.
 
+### Random vs deterministic suffix
+
+That `a1b2c3d4` suffix is minted one of two ways, and the choice is the caller's:
+
+- **Random (default).** A fresh nonce per request, shared by every placeholder it
+  emits. Unguessable, but the same value redacts to a *different* placeholder each
+  request.
+- **Deterministic.** The suffix is `HMAC(key, value)` — a keyed function of the
+  value — so the same value under the same key yields a byte-identical placeholder
+  across requests. A replayed conversation prefix then redacts the same way turn
+  after turn, which keeps a provider's prompt cache warm on the redacted text. It's
+  a *keyed* HMAC, never a bare hash, so low-entropy PII isn't brute-forceable out of
+  its placeholder — and it's opt-in (`Vault::deterministic(key)`), threaded in via
+  `ScanCtx::new().with_vault(...)`. See
+  [cache-stable redaction](scanners/restore.md#cache-stable-deterministic-redaction).
+
 ## RestorePolicy: round-trip vs one-way
 
 Here's the design decision that makes cerberust composable: **whether a redaction is

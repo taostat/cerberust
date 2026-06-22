@@ -38,10 +38,16 @@ catastrophic backtracking.
 - **Streaming-safe by design.** A secret split across two streamed chunks is never
   half-emitted. The runner holds back exactly the bytes that could still be
   completing a match, and nothing more.
-- **Deterministic redaction with restore.** PII is tokenized on the way in and
+- **Redaction with restore.** PII is tokenized on the way in and
   put back on the way out — your user still reads their own email address in the
   reply, but the model never saw it. Secrets get the same treatment and are
   *never* restored.
+- **Cache-stable placeholders, optionally.** By default each request mints a fresh
+  random nonce, so the same value redacts differently every time. Opt into
+  deterministic mode and a value's placeholder becomes a keyed function of the
+  value — byte-identical across requests — so a replayed conversation prefix
+  redacts the same way turn after turn and stays friendly to a provider's prompt
+  cache ([deterministic redaction](docs/scanners/restore.md#cache-stable-deterministic-redaction)).
 - **Composable.** Scanners are pure `text -> verdict` functions. Stack them in any
   order; the stack threads the rewritten text and a shared vault through every one.
 - **Extensible and sandboxed.** Bring your own patterns with a custom regex
@@ -67,7 +73,7 @@ use cerberust::{
 
 // Build a stack: redact PII, mask secrets, restore PII on the way back.
 let scanners: Vec<Box<dyn Scanner>> = vec![
-    Box::new(PiiScanner::new()),       // email/phone/card/IP/SSN -> tokenized
+    Box::new(PiiScanner::new()),       // email/phone/card/IP/SSN/IBAN -> tokenized
     Box::new(SecretScanner::new()),    // API keys/secrets       -> masked, one-way
     Box::new(RestoreScanner::for_pii()), // PII rehydrated in the response
 ];
@@ -87,7 +93,7 @@ including streaming.
 
 | Scanner | Protects you from | Default |
 |---|---|---|
-| [`PiiScanner`](docs/scanners/pii.md) | leaking emails, phone numbers, credit cards, IPs, and SSNs to a model provider | on, restores by default |
+| [`PiiScanner`](docs/scanners/pii.md) | leaking emails, phone numbers, credit cards, IPs, SSNs, and IBANs to a model provider | on, restores by default |
 | [`SecretScanner`](docs/scanners/secrets.md) | API keys, tokens, and private keys pasted into a prompt reaching a provider or being echoed back | on, one-way |
 | [`RegexScanner`](docs/scanners/regex.md) | your *own* sensitive formats — ticket ids, account numbers, internal tokens | opt-in (you supply patterns) |
 | [`BanSubstringsScanner`](docs/scanners/ban-substrings.md) | specific phrases you never want in a prompt or a reply | opt-in |
