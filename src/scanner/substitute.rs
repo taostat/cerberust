@@ -135,7 +135,8 @@ impl Substituter {
     /// longest-first table is unambiguous.
     #[must_use]
     pub fn substitute(&self, text: &str) -> String {
-        self.substitute_with_counting(text, &RestoreEncoder::identity()).0
+        self.substitute_with_counting(text, &RestoreEncoder::identity())
+            .0
     }
 
     /// The core restore: replace every complete sentinel with its original,
