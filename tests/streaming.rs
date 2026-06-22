@@ -22,6 +22,10 @@ const MODEL_CARD: &str = "4111 1111 1111 1111";
 /// An AWS key the secret scanner redacts via the `AKIA[0-9A-Z]{16}` pattern.
 const AWS_KEY: &str = "AKIAIOSFODNN7EXAMPLE";
 
+/// A valid (mod-97) IBAN the model emits; the `Sensitive` output scanner masks
+/// it `OneWay`. Its spaces mean it forms across chunk boundaries.
+const MODEL_IBAN: &str = "GB82 WEST 1234 5698 7654 32";
+
 /// The distinctive prefixes of `secret` — every prefix from the 4-char vendor
 /// marker (`AKIA`) up to one byte short of the whole key. These begin with a
 /// marker that appears in neither clean prose nor the redaction sentinel, so a
@@ -156,6 +160,28 @@ fn sentinel_spanning_chunks_restores_fully() {
             "restore failed at chunk_len {chunk_len}",
         );
         assert!(!emitted.contains("[REDACTED_EMAIL"));
+    }
+}
+
+#[test]
+fn split_iban_is_fully_redacted_across_chunks() {
+    // An IBAN the model emits straddles chunk boundaries (it has spaces). The
+    // hold-back DFA must buffer until the whole candidate is seen, so the
+    // streamed output redacts it whole and never emits the full IBAN mid-stream.
+    let response = format!("send to {MODEL_IBAN} now");
+    for chunk_len in 1..=7 {
+        let scanners: Vec<Box<dyn Scanner>> = vec![Box::new(PiiScanner::sensitive_output())];
+        let mut stack = ScannerStack::new(scanners, true);
+        let emitted = run_chunked(&mut stack, &response, chunk_len, |out| {
+            assert!(
+                !out.contains(MODEL_IBAN),
+                "leaked full IBAN at chunk_len {chunk_len}: {out:?}",
+            );
+        });
+        assert!(!emitted.contains(MODEL_IBAN));
+        assert!(emitted.contains("[REDACTED_IBAN_1_"));
+        assert!(emitted.starts_with("send to "));
+        assert!(emitted.ends_with(" now"));
     }
 }
 
