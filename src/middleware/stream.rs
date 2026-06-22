@@ -44,10 +44,21 @@ use crate::scanner::substitute::Substituter;
 use crate::scanner::{Blocked, ScannerStack};
 
 /// Drives the output scanner stack over streamed chunks with conservative
-/// hold-back. One instance scans one response; it owns the carry buffer and is
-/// finished by [`StreamOutput::finish`].
-pub struct StreamOutput<'s> {
-    stack: &'s mut ScannerStack,
+/// hold-back. One instance scans one response.
+///
+/// The runner owns all of its carry state (the hold-back buffer, the compiled
+/// DFA, the mode flag) and borrows nothing for longer than a single call: the
+/// [`ScannerStack`] is passed in per [`push`](Self::push) and to
+/// [`finish`](Self::finish). One `StreamOutput` can therefore be created once
+/// and driven frame-by-frame across an arbitrary number of independent async
+/// callbacks — a per-frame SSE/JSON consumer holds the `StreamOutput` and hands
+/// it the stack each time a frame arrives, with no long-lived borrow.
+///
+/// The same stack must be passed across the whole stream: it carries the shared
+/// `Vault` the restore pass reads. Install any
+/// [`RestoreEncoder`](crate::RestoreEncoder) on the stack (see
+/// [`ScannerStack::set_restore_encoder`]) before the first `push`.
+pub struct StreamOutput {
     dfa: HoldBackDfa,
     /// Bytes received but not yet provably safe to flush.
     carry: Vec<u8>,
@@ -55,14 +66,16 @@ pub struct StreamOutput<'s> {
     whole_stream: bool,
 }
 
-impl<'s> StreamOutput<'s> {
-    /// Build a streaming output runner over `stack`. Reads the stack's output
-    /// scanners once to decide the mode and compile the hold-back DFA.
-    pub fn new(stack: &'s mut ScannerStack) -> Self {
+impl StreamOutput {
+    /// Build a streaming output runner for `stack`. Reads the stack's output
+    /// scanners once to decide the mode and compile the hold-back DFA, then
+    /// borrows nothing: subsequent [`push`](Self::push)/[`finish`](Self::finish)
+    /// calls take the stack by mutable reference per call.
+    #[must_use]
+    pub fn new(stack: &ScannerStack) -> Self {
         let whole_stream = stack.output_needs_whole_stream();
         let dfa = HoldBackDfa::new(&stack.output_stream_patterns());
         Self {
-            stack,
             dfa,
             carry: Vec::new(),
             whole_stream,
@@ -72,37 +85,49 @@ impl<'s> StreamOutput<'s> {
     /// Accept the next `chunk`, returning the bytes safe to emit now (possibly
     /// empty — a chunk that only extends a forming match emits nothing).
     ///
+    /// `stack` is the same stack passed across the whole stream (it holds the
+    /// shared vault); it is borrowed only for the duration of this call.
+    ///
     /// # Errors
     /// Returns [`MiddlewareError::Blocked`] if a `Block` output scanner rejects
     /// the flushed prefix.
-    pub fn push(&mut self, chunk: &str) -> Result<String, MiddlewareError> {
+    pub fn push(
+        &mut self,
+        stack: &mut ScannerStack,
+        chunk: &str,
+    ) -> Result<String, MiddlewareError> {
         self.carry.extend_from_slice(chunk.as_bytes());
         if self.whole_stream {
             // Mode B: nothing is judged until the whole response is in hand.
             return Ok(String::new());
         }
-        self.flush_safe_prefix(false)
+        self.flush_safe_prefix(stack, false)
     }
 
     /// End the stream: flush everything still held (no more bytes can extend a
-    /// match), running the final unary scan over the remainder.
+    /// match), running the final unary scan over the remainder. `stack` is the
+    /// same stack driven across the stream.
     ///
     /// # Errors
     /// Returns [`MiddlewareError::Blocked`] if a `Block` output scanner rejects.
-    pub fn finish(mut self) -> Result<String, MiddlewareError> {
-        self.flush_safe_prefix(true)
+    pub fn finish(mut self, stack: &mut ScannerStack) -> Result<String, MiddlewareError> {
+        self.flush_safe_prefix(stack, true)
     }
 
     /// Compute the safe-flush split of `carry`, scan that prefix unary, emit it,
     /// and retain the rest. `at_eof` collapses every hold-back to the full
     /// buffer — no further bytes will arrive.
-    fn flush_safe_prefix(&mut self, at_eof: bool) -> Result<String, MiddlewareError> {
-        let split = self.safe_split(at_eof);
+    fn flush_safe_prefix(
+        &mut self,
+        stack: &mut ScannerStack,
+        at_eof: bool,
+    ) -> Result<String, MiddlewareError> {
+        let split = self.safe_split(stack, at_eof);
         if split == 0 {
             return Ok(String::new());
         }
         let prefix = self.take_prefix(split);
-        let scanned = self.stack.run_output(&prefix).map_err(|b| blocked(&b))?;
+        let scanned = stack.run_output(&prefix).map_err(|b| blocked(&b))?;
         Ok(scanned)
     }
 
@@ -119,14 +144,14 @@ impl<'s> StreamOutput<'s> {
     /// The byte offset up to which the carry is safe to flush: the tightest of
     /// the token-boundary floor, the DFA hold-back, and the sentinel-prefix
     /// hold-back — then snapped down to a UTF-8 char boundary.
-    fn safe_split(&mut self, at_eof: bool) -> usize {
+    fn safe_split(&mut self, stack: &ScannerStack, at_eof: bool) -> usize {
         let buf = &self.carry;
         if at_eof {
             return buf.len();
         }
         let mut split = self.dfa.safe_flush_len(buf, false);
         split = split.min(token_boundary_floor(buf));
-        split = split.min(sentinel_floor(self.stack, buf));
+        split = split.min(sentinel_floor(stack, buf));
         char_boundary_floor(buf, split)
     }
 }

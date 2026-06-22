@@ -207,6 +207,36 @@ The streaming runner combines these into one of two modes:
 The guarantee either way: **streamed output is byte-identical to scanning the whole
 response at once.** Streaming changes when bytes come out, never what comes out.
 
+### Driving the runner
+
+`StreamOutput` owns its hold-back state and borrows nothing across calls: you
+create it once from the stack, then pass the stack to each `push` and to
+`finish`. So one runner can be held across many independent async frame
+callbacks — a per-frame SSE/JSON consumer keeps the `StreamOutput`, and hands it
+the stack each time a frame arrives:
+
+```rust
+let mut runner = StreamOutput::new(&stack);
+// …later, once per arriving frame, with no long-lived borrow on `stack`:
+let safe = runner.push(&mut stack, frame)?;
+// …at end of stream:
+let tail = runner.finish(&mut stack)?;
+```
+
+The same stack must drive the whole stream — it holds the shared `Vault` the
+restore pass reads.
+
+### Encoding restored values
+
+When you splice a restored original back into a structured stream (a value inside
+a JSON string in an SSE frame), the raw original may carry characters the
+surrounding format must escape. Install a `RestoreEncoder` on the stack
+(`stack.set_restore_encoder(RestoreEncoder::new(json_escape))`) and the restore
+pass runs it over **each restored original only** — never the surrounding model
+bytes, which the upstream already encoded. The default is
+`RestoreEncoder::identity`: originals are emitted verbatim, so restore is
+unchanged unless you opt in.
+
 ## How they fit together
 
 ```

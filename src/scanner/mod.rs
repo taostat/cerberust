@@ -17,6 +17,7 @@ use std::time::Instant;
 
 use thiserror::Error;
 
+pub use substitute::RestoreEncoder;
 pub use types::{
     Direction, Disposition, HoldBack, RestorePolicy, ScanResult, ScannerId, Threshold, Verdict,
 };
@@ -47,15 +48,23 @@ pub struct ScanCtx {
     /// here — this carries LLM Guard's output `scan(prompt, output)` second
     /// argument without widening the per-call signature.
     pub prompt: Option<String>,
+    /// How a restored original is encoded before it is spliced back into the
+    /// output. The default [`RestoreEncoder::identity`] emits originals verbatim;
+    /// a caller restoring over a JSON/SSE stream installs a JSON-escaping encoder
+    /// (see [`ScannerStack::set_restore_encoder`]). The
+    /// [`RestoreScanner`](crate::scanners::RestoreScanner) reads it.
+    pub restore_encoder: RestoreEncoder,
 }
 
 impl ScanCtx {
-    /// A fresh context with an empty vault and no prompt.
+    /// A fresh context with an empty vault, no prompt, and the identity restore
+    /// encoder.
     #[must_use]
     pub fn new() -> Self {
         Self {
             vault: Vault::new(),
             prompt: None,
+            restore_encoder: RestoreEncoder::identity(),
         }
     }
 
@@ -282,6 +291,13 @@ impl ScannerStack {
     #[must_use]
     pub fn ctx(&self) -> &ScanCtx {
         &self.ctx
+    }
+
+    /// Install the [`RestoreEncoder`] the restore pass applies to each rehydrated
+    /// original — e.g. a JSON-escaping encoder when restoring over an SSE/JSON
+    /// stream. Defaults to [`RestoreEncoder::identity`] (originals verbatim).
+    pub fn set_restore_encoder(&mut self, encoder: RestoreEncoder) {
+        self.ctx.restore_encoder = encoder;
     }
 
     /// The union of every output scanner's [`Scanner::stream_patterns`] — the
