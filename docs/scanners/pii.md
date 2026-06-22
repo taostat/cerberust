@@ -112,7 +112,9 @@ precision and recall in the [benchmarks](../benchmarks.md).
 
 ## Performance
 
-On the benchmark corpus, the PII scanner runs at **~1.34M samples/sec** with
-**perfect precision and recall (1.00 / 1.00)** on structured PII — about
-20,000× the throughput of the Presidio-NER-based equivalent on the same corpus.
-See [benchmarks](../benchmarks.md) for methodology and caveats.
+On the structured benchmark corpus, the PII scanner runs at **~1.34M samples/sec**
+with **perfect precision and recall (1.00 / 1.00)** — and, being deterministic, it
+doesn't over-redact ordinary words the way an NER pipeline can. It's regex +
+checksums, not a neural net, so we don't race it on speed against `llm-guard`'s NER
+(which scores 0.75 / 0.89 here); NER leads on free-text names cerberust deliberately
+doesn't attempt. See [benchmarks](../benchmarks.md) for methodology and caveats.
