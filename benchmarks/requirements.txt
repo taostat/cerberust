@@ -1,0 +1,6 @@
+# LLM Guard baseline for the LLM Guard comparison. Pinned to the version measured in
+# RESULTS.md. Requires Python 3.9–3.12 (will not build on 3.13+: spaCy's `blis`
+# has no wheel and fails to compile). The spaCy model wheels (en_core_web_sm,
+# zh_core_web_sm) that Presidio's Anonymize loads are installed separately — see
+# README.md, step 3.
+llm-guard==0.3.16

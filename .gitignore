@@ -1,0 +1,11 @@
+/target
+examples/*/target
+**/*.rs.bk
+Cargo.lock
+.DS_Store
+
+# Benchmark artifacts: the Python venv (large) and per-machine result JSONs are
+# generated. The labeled corpus is committed (deterministic, small) so the
+# harness runs out of the box.
+benchmarks/.venv/
+benchmarks/results/

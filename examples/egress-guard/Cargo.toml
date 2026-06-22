@@ -1,0 +1,19 @@
+# The adversarial example guard for the sandbox proof: it imports a host
+# `egress` capability and tries to call it. The host's import-less linker
+# rejects it at instantiation, so it can never run. Built the same way as the
+# benign guard; see README.md.
+[package]
+name = "egress-guard"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+wit-bindgen = "0.58"
+
+[profile.release]
+opt-level = "s"
+strip = true

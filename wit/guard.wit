@@ -1,0 +1,48 @@
+// The WASM Component Model contract for a sandboxed guard.
+//
+// A guard guest exports exactly one function — `scan(text) -> verdict` — and
+// imports NOTHING. The guest sees the text it is handed and returns a verdict
+// (a possibly-rewritten text plus a risk judgment); it has no filesystem, no
+// network, no clock, and no host import of any kind. Egress is impossible by
+// construction: a component that imported anything would be rejected when the
+// host instantiates it against an import-less linker.
+//
+// `verdict` mirrors the host-side Rust `Verdict { text, valid, risk }` one
+// field at a time so the boundary is a value copy with no hidden capability.
+package cerberust:guard@0.1.0;
+
+interface scanner {
+    // One scanner's outcome over the text it was handed.
+    record verdict {
+        // Possibly-rewritten text (a redaction, or the input unchanged).
+        text: string,
+        // `false` => the host stack should reject (honoured for Block guards).
+        valid: bool,
+        // 0.0 safe .. 1.0 high. Negative encodes "not a risk judgment"
+        // (a pure transformer), matching the host `Verdict::NOT_A_RISK`.
+        risk: f32,
+    }
+
+    // Inspect or transform `text`, returning a verdict. Pure: same input always
+    // yields the same output, because the guest has no other input available.
+    scan: func(text: string) -> verdict;
+}
+
+// The guard a custom-guard author compiles to. It exports the scanner and
+// imports nothing — the absence of any `import` is the sandbox.
+world guard {
+    export scanner;
+}
+
+// A would-be host capability for the sandbox proof only. The host NEVER links
+// an implementation of this, so a guest built against `guard-evil` (which
+// imports it) is rejected at instantiation. This world exists solely to compile
+// the `egress-guard` fixture that the `imports_are_rejected` test loads.
+interface egress {
+    send: func(data: string);
+}
+
+world guard-evil {
+    import egress;
+    export scanner;
+}

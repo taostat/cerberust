@@ -1,0 +1,105 @@
+[package]
+name = "cerberust"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.83"
+description = "Fast Rust guardrails for LLM input/output — composable scanners (PII, secrets, prompt-injection) and streaming middleware."
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/taostat/cerberust"
+readme = "README.md"
+keywords = ["llm", "guardrails", "pii", "security", "scanner"]
+categories = ["text-processing"]
+publish = false
+
+[dependencies]
+thiserror = "2.0"
+regex = "1.11"
+# The streaming output runner feeds output bytes into a DFA to bound hold-back:
+# from each byte the match is complete / still-live / dead, and only a region
+# the DFA proves dead-from-start is safe to flush. The high-level `regex` crate
+# only answers "matches?" over a whole string; `regex-automata` exposes the lazy
+# DFA whose per-byte state is what bounds the hold-back conservatively. It is the
+# same audited regex-crate ecosystem `regex` already depends on — the version is
+# unified in Cargo.lock and `cargo deny` stays clean.
+regex-automata = "0.4"
+zeroize = { version = "1.8", features = ["derive"] }
+rand = "0.8"
+hex = "0.4"
+
+# The WASM guard runner (feature `wasm`). `wasmtime` is the reference
+# WebAssembly Component Model runtime; it loads a user-submitted guard component
+# and — instantiated against an import-less linker — runs it as a pure
+# `scan(text) -> verdict` function with no ambient authority (no WASI, no
+# network, no clock). This is the load-bearing sandbox for running untrusted
+# third-party guards, so the runtime is the dependency that earns its weight. `default-features = false` drops the `wat`/`wast` text
+# tooling and `winch`, keeping only the `cranelift` compiler and the
+# `component-model` runtime. `anyhow` is wasmtime's own error type, surfaced
+# only at load/trap boundaries and wrapped in `WasmLoadError`/`ScanError`.
+# Pinned to the 44.x line: 45.x raises wasmtime's MSRV to rustc 1.93, above this
+# crate's 1.83 floor and the current toolchain.
+wasmtime = { version = "44.0.3", default-features = false, features = [
+    "runtime",
+    "component-model",
+    "cranelift",
+], optional = true }
+anyhow = { version = "1.0", optional = true }
+
+# The ML PromptInjection scanner (feature `prompt-injection`). `ort` is the Rust
+# binding to ONNX Runtime; `download-binaries` (an ort default feature) fetches a
+# prebuilt ONNX Runtime at build time, so the crate compiles with no system ORT
+# install. The `ndarray` feature is dropped — input tensors are built from
+# `(shape, Vec<i64>)` and logits read back as an `&[f32]` slice, so the heavier
+# ndarray dependency is not pulled. `tokenizers` is HuggingFace's own tokenizer
+# crate, loading the model's `tokenizer.json` (a DeBERTa-v3 SentencePiece
+# tokenizer); `onig` is its default regexer. Both are large trees, hence the
+# off-by-default feature — the core scanner library never links them.
+ort = { version = "2.0.0-rc.12", default-features = false, features = [
+    "std",
+    "download-binaries",
+    "tls-native",
+], optional = true }
+tokenizers = { version = "0.23", default-features = false, features = [
+    "onig",
+], optional = true }
+
+[features]
+# Off by default so the core scanner library stays lean (the wasmtime runtime is
+# a large dependency tree). Turn on to load and run sandboxed WASM guards.
+wasm = ["dep:wasmtime", "dep:anyhow"]
+# Off by default so the core scanner library stays lean (the ort/ONNX Runtime and
+# tokenizers trees are large). Turn on for the ML PromptInjection scanner.
+prompt-injection = ["dep:ort", "dep:tokenizers"]
+
+[dev-dependencies]
+proptest = "1.6"
+
+# The LLM Guard comparison bench. A custom `harness = false` bench: a
+# plain `main()` that reads the shared corpus, runs each scanner, and writes the
+# results JSON the Python side merges — `criterion` cannot read a corpus path,
+# emit precision/recall, or feature-gate the ML scanner, so no bench framework is
+# pulled in. The `prompt-injection` part is `#[cfg]`-gated on the same feature.
+[[bench]]
+name = "comparison"
+harness = false
+
+[lints.clippy]
+pedantic = { level = "warn", priority = -1 }
+# Panic prevention
+unwrap_used = "deny"
+expect_used = "warn"
+panic = "deny"
+panic_in_result_fn = "deny"
+unimplemented = "deny"
+# No cheating
+allow_attributes = "deny"
+# Code hygiene
+dbg_macro = "deny"
+todo = "deny"
+print_stdout = "deny"
+print_stderr = "deny"
+# Safety
+exit = "deny"
+mem_forget = "deny"
+# Pedantic relaxations (too noisy)
+module_name_repetitions = "allow"
+similar_names = "allow"

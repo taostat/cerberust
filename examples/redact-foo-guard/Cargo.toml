@@ -1,0 +1,18 @@
+# A minimal example guard, compiled to a WebAssembly Component and run by the
+# host `WasmScanner`. Standalone (not a member of the cerberust workspace): it
+# targets wasm32 and depends only on wit-bindgen. See README.md for the build.
+[package]
+name = "redact-foo-guard"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+wit-bindgen = "0.58"
+
+[profile.release]
+opt-level = "s"
+strip = true
