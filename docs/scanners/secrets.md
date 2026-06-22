@@ -82,7 +82,8 @@ because restore is enforced per placeholder and the restorer only owns PII types
 Running it on `Direction::Output` masks secrets the **model** emits — useful when a
 model might echo a credential it was shown or fabricate a plausible one.
 
-**Default:** on. The secret scanner is part of the standard stack.
+**Opt-in**, like every scanner — nothing runs until you add it to a `ScannerStack`.
+Ships in the default build (no extra cargo feature).
 
 ## Performance
 

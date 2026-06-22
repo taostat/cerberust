@@ -77,10 +77,15 @@ cerberust wins decisively on the deterministic scanners and ties the ML scanner.
 
 We'd rather you trust the numbers than be wowed by them, so:
 
-1. **The PII/Secrets detection edge reflects a *structured* corpus** — entities with
-   a recognizable shape, which regex + checksum handles natively. On free-text names
-   and addresses (NER's strength), a Presidio-style detector would lead until
-   cerberust's planned `gline-rs` NER detector lands.
+1. **It's regex-and-checksum vs NER — and on a *structured* corpus.** cerberust's PII
+   edge is on entities with a recognizable shape (emails, cards, IBANs, IPs, SSNs),
+   which regex + checksums handle natively and far faster than `llm-guard`'s spaCy
+   NER pipeline. On free-text names and addresses (NER's strength), a Presidio-style
+   NER detector would lead — **cerberust deliberately doesn't ship fuzzy NER**: it
+   over-redacts ordinary words and domain terms, trading the precision a guardrail
+   needs for recall. If you need free-text name coverage, pair cerberust with a
+   dedicated NER tool. So read the PII/Secrets rows as "much faster and more precise
+   *on structured entities*," not as a universal PII-detection win.
 2. **Ban-substrings recall (0.27) is low on both sides by design.** It's a keyword
    baseline, not a detector.
 3. **The ML scanner's absolute throughput depends heavily on hardware.** The ~1.3×
