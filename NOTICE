@@ -1,0 +1,8 @@
+cerberust
+
+This project's design was inspired by Protect AI's llm-guard
+(https://github.com/protectai/llm-guard), a Python toolkit for securing LLM
+input and output. cerberust borrows concepts — the scanner/vault model, the
+reversible-redaction approach, and the prompt-injection classifier
+(protectai/deberta-v3-base-prompt-injection-v2) — but shares no source code with
+it. We credit llm-guard as prior art with thanks.
