@@ -97,16 +97,18 @@ Pair an input `PiiScanner` with `RestoreScanner::for_pii()` in the same stack to
 complete the round-trip. The entity types it restores are `EMAIL`, `PHONE`,
 `US_SSN`, `IP_ADDRESS`, `CREDIT_CARD`, and `IBAN`.
 
-**Default:** on. The PII scanner is part of the standard stack.
+**Opt-in**, like every scanner — nothing runs until you add it to a `ScannerStack`.
+Ships in the default build (no extra cargo feature).
 
-## What it doesn't do (yet)
+## What it doesn't do
 
 This scanner detects **structured** PII — entities with a recognizable shape. It
-does *not* yet detect free-text names, street addresses, or organizations, which
-need named-entity recognition. NER is a planned addition that emits the same spans,
-so it'll slot into the same redact path without changing how you use the scanner.
-On the structured PII it does handle, it scores perfect precision and recall in the
-[benchmarks](../benchmarks.md).
+does *not* detect free-text names, street addresses, or organizations, which need
+named-entity recognition (NER). cerberust **deliberately omits fuzzy NER**: ML
+name-detection over-redacts ordinary words and domain terms, trading the precision a
+guardrail needs for recall. If you need free-text name coverage, pair cerberust with
+a dedicated NER tool. On the structured PII it does handle, it scores perfect
+precision and recall in the [benchmarks](../benchmarks.md).
 
 ## Performance
 
