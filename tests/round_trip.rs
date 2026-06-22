@@ -46,6 +46,34 @@ fn email_redacted_then_restored() {
 }
 
 #[test]
+fn iban_redacted_then_restored() {
+    let scanner = PiiScanner::new();
+    let mut ctx = ScanCtx::new();
+    let verdict = scanner
+        .scan("wire to GB82 WEST 1234 5698 7654 32 please", &mut ctx)
+        .unwrap();
+    assert!(verdict.text.contains("[REDACTED_IBAN_1_"));
+    assert!(!verdict.text.contains("GB82 WEST 1234 5698 7654 32"));
+
+    let restore = RestoreScanner::for_pii();
+    let redacted = verdict.text.into_owned();
+    let restored = restore.scan(&redacted, &mut ctx).unwrap();
+    assert_eq!(restored.text, "wire to GB82 WEST 1234 5698 7654 32 please");
+}
+
+#[test]
+fn iban_bad_checksum_passes_through_untouched() {
+    let scanner = PiiScanner::new();
+    let mut ctx = ScanCtx::new();
+    // One transposed digit fails mod-97: not an IBAN, left verbatim.
+    let out = scanner
+        .scan("ref GB82 WEST 1234 5698 7654 33 end", &mut ctx)
+        .unwrap();
+    assert!(out.text.contains("GB82 WEST 1234 5698 7654 33"));
+    assert!(!out.text.contains("[REDACTED_IBAN"));
+}
+
+#[test]
 fn credit_card_luhn_redacted_random_digits_untouched() {
     let scanner = PiiScanner::new();
     let mut ctx = ScanCtx::new();

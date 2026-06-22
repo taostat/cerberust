@@ -108,7 +108,7 @@ fn never_match() -> &'static Regex {
 /// The structured-PII source patterns, the single source both the compiled
 /// detector regexes and the streaming hold-back DFA read. Order matches the
 /// fields of [`StructuredRules`].
-const STRUCTURED_PATTERNS: [&str; 5] = [
+const STRUCTURED_PATTERNS: [&str; 6] = [
     r"[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,}",
     r"(?:\+?\d{1,3}[\s.\-]?)?(?:\(\d{3}\)|\d{3})[\s.\-]\d{3}[\s.\-]\d{4}\b",
     r"\b\d{3}-\d{2}-\d{4}\b",
@@ -119,6 +119,13 @@ const STRUCTURED_PATTERNS: [&str; 5] = [
     // into the match (which would redact `4111 1111 1111 1111 ` and corrupt the
     // following text).
     r"\b\d(?:[ \-]?\d){12,18}\b",
+    // Candidate IBANs (ISO 13616): 2-letter country + 2 check digits + up to 30
+    // BBAN alphanumerics, optionally single-spaced (the human-readable grouping
+    // varies by country). The match is deliberately greedy and may overrun into
+    // the following word; `iban_ok` strips spaces, checks the country-specific
+    // length, then mod-97, trimming trailing groups until a valid IBAN is found
+    // or the candidate is rejected — so an overrun never produces a redaction.
+    r"\b[A-Za-z]{2}\d{2}(?:[ ]?[A-Za-z0-9]){11,32}\b",
 ];
 
 /// The structured-PII detector patterns as DFA hold-back source strings.
@@ -136,6 +143,7 @@ struct StructuredRules {
     ssn: Regex,
     ip: Regex,
     digits: Regex,
+    iban: Regex,
 }
 
 fn structured_rules() -> &'static StructuredRules {
@@ -146,12 +154,14 @@ fn structured_rules() -> &'static StructuredRules {
         ssn: structured_rule(STRUCTURED_PATTERNS[2]),
         ip: structured_rule(STRUCTURED_PATTERNS[3]),
         digits: structured_rule(STRUCTURED_PATTERNS[4]),
+        iban: structured_rule(STRUCTURED_PATTERNS[5]),
     })
 }
 
 /// Detect structured PII: `EMAIL`, `PHONE`, `US_SSN`, `IP_ADDRESS`,
-/// `CREDIT_CARD` (Luhn-checked). Checksums gate the candidates that would
-/// otherwise over-match (a random 16-digit number is not a card).
+/// `CREDIT_CARD` (Luhn-checked), `IBAN` (mod-97-checked). Checksums gate the
+/// candidates that would otherwise over-match (a random 16-digit number is not
+/// a card; a random `GB00…` string is not an IBAN).
 #[must_use]
 pub fn detect_structured(text: &str) -> Vec<Span> {
     let r = structured_rules();
@@ -173,6 +183,12 @@ pub fn detect_structured(text: &str) -> Vec<Span> {
     for m in r.digits.find_iter(text) {
         if luhn_ok(m.as_str()) {
             spans.push(Span::new(m.start(), m.end(), "CREDIT_CARD", 0.95));
+        }
+    }
+    for m in r.iban.find_iter(text) {
+        for (offset, len) in valid_ibans_in(m.as_str()) {
+            let start = m.start() + offset;
+            spans.push(Span::new(start, start + len, "IBAN", 0.95));
         }
     }
     spans
@@ -201,6 +217,209 @@ fn luhn_ok(s: &str) -> bool {
         sum += d;
     }
     sum % 10 == 0
+}
+
+/// The registered total IBAN length per ISO 13616 country code. Length is
+/// fixed per country, so it gates candidates that mod-97 alone would accept (a
+/// 23-char `GB…` with recomputed check digits is not a real IBAN — GB is 22).
+const IBAN_LENGTHS: &[(&[u8; 2], usize)] = &[
+    (b"AD", 24),
+    (b"AE", 23),
+    (b"AL", 28),
+    (b"AT", 20),
+    (b"AZ", 28),
+    (b"BA", 20),
+    (b"BE", 16),
+    (b"BG", 22),
+    (b"BH", 22),
+    (b"BI", 27),
+    (b"BR", 29),
+    (b"BY", 28),
+    (b"CH", 21),
+    (b"CR", 22),
+    (b"CY", 28),
+    (b"CZ", 24),
+    (b"DE", 22),
+    (b"DJ", 27),
+    (b"DK", 18),
+    (b"DO", 28),
+    (b"EE", 20),
+    (b"EG", 29),
+    (b"ES", 24),
+    (b"FI", 18),
+    (b"FK", 18),
+    (b"FO", 18),
+    (b"FR", 27),
+    (b"GB", 22),
+    (b"GE", 22),
+    (b"GI", 23),
+    (b"GL", 18),
+    (b"GR", 27),
+    (b"GT", 28),
+    (b"HN", 28),
+    (b"HR", 21),
+    (b"HU", 28),
+    (b"IE", 22),
+    (b"IL", 23),
+    (b"IQ", 23),
+    (b"IS", 26),
+    (b"IT", 27),
+    (b"JO", 30),
+    (b"KW", 30),
+    (b"KZ", 20),
+    (b"LB", 28),
+    (b"LC", 32),
+    (b"LI", 21),
+    (b"LT", 20),
+    (b"LU", 20),
+    (b"LV", 21),
+    (b"LY", 25),
+    (b"MC", 27),
+    (b"MD", 24),
+    (b"ME", 22),
+    (b"MK", 19),
+    (b"MN", 20),
+    (b"MR", 27),
+    (b"MT", 31),
+    (b"MU", 30),
+    (b"NI", 28),
+    (b"NL", 18),
+    (b"NO", 15),
+    (b"OM", 23),
+    (b"PK", 24),
+    (b"PL", 28),
+    (b"PS", 29),
+    (b"PT", 25),
+    (b"QA", 29),
+    (b"RO", 24),
+    (b"RS", 22),
+    (b"RU", 33),
+    (b"SA", 24),
+    (b"SC", 31),
+    (b"SD", 18),
+    (b"SE", 24),
+    (b"SI", 19),
+    (b"SK", 24),
+    (b"SM", 27),
+    (b"SO", 23),
+    (b"ST", 25),
+    (b"SV", 28),
+    (b"TL", 23),
+    (b"TN", 24),
+    (b"TR", 26),
+    (b"UA", 29),
+    (b"VA", 22),
+    (b"VG", 24),
+    (b"XK", 20),
+    (b"YE", 30),
+];
+
+/// The registered IBAN length for `country` (uppercased), or `None` for an
+/// unknown country code.
+fn iban_length(country: [u8; 2]) -> Option<usize> {
+    let country = [
+        country[0].to_ascii_uppercase(),
+        country[1].to_ascii_uppercase(),
+    ];
+    IBAN_LENGTHS
+        .iter()
+        .find(|(cc, _)| **cc == country)
+        .map(|(_, len)| *len)
+}
+
+/// Every non-overlapping valid IBAN inside `candidate` as `(start_offset, len)`
+/// byte indices.
+///
+/// One greedy regex match can span an IBAN-shaped run that is not itself valid
+/// (`AA00 GB82 …`), overrun into the following word, *and* hold more than one
+/// real IBAN. `find_iter` is non-overlapping, so each candidate must be mined in
+/// full. Scan each `[A-Za-z]{2}\d{2}` start; on a hit, emit it and resume past
+/// its end so adjacent IBANs are each found and none is double-counted.
+fn valid_ibans_in(candidate: &str) -> Vec<(usize, usize)> {
+    let mut found = Vec::new();
+    let mut next = 0;
+    for start in iban_starts(candidate) {
+        if start < next {
+            continue;
+        }
+        if let Some(len) = valid_iban_prefix_len(&candidate[start..]) {
+            found.push((start, len));
+            next = start + len;
+        }
+    }
+    found
+}
+
+/// Byte offsets in `candidate` where an IBAN can begin: a 2-letter country code
+/// and 2 check digits at a word boundary (start of string or after a space).
+fn iban_starts(candidate: &str) -> impl Iterator<Item = usize> + '_ {
+    let bytes = candidate.as_bytes();
+    (0..bytes.len()).filter(move |&i| {
+        let after_boundary = i == 0 || bytes[i - 1] == b' ';
+        let anchor = bytes.get(i..i + 4).is_some_and(|w| {
+            w[0].is_ascii_alphabetic()
+                && w[1].is_ascii_alphabetic()
+                && w[2].is_ascii_digit()
+                && w[3].is_ascii_digit()
+        });
+        after_boundary && anchor
+    })
+}
+
+/// The byte length of the valid IBAN at the start of `candidate`, or `None`.
+/// Trims one trailing space-separated group at a time and accepts the first
+/// prefix that validates; the length counts spaces so the caller can place the
+/// span without re-walking.
+fn valid_iban_prefix_len(candidate: &str) -> Option<usize> {
+    let mut end = candidate.len();
+    loop {
+        if iban_ok(&candidate[..end]) {
+            return Some(end);
+        }
+        // Drop the last whitespace-separated group and retry; stop once the
+        // remaining prefix is too short to hold the shortest IBAN (15 chars).
+        let space = candidate[..end].rfind(' ')?;
+        end = candidate[..space].trim_end().len();
+        if end < 15 {
+            return None;
+        }
+    }
+}
+
+/// ISO 13616 IBAN check on a single candidate: strip spaces, require the
+/// country-specific length, then validate the mod-97 checksum. The checksum
+/// moves the first four characters to the end, maps each letter to two digits
+/// (`A`=10 … `Z`=35), and reads the result as one integer that must be
+/// `1 mod 97`. The running remainder is folded character-by-character to stay
+/// within `u32` without bignum.
+fn iban_ok(s: &str) -> bool {
+    let compact: Vec<u8> = s.bytes().filter(|b| !b.is_ascii_whitespace()).collect();
+    let Some(&[c0, c1]) = compact.get(..2) else {
+        return false;
+    };
+    if iban_length([c0, c1]) != Some(compact.len()) {
+        return false;
+    }
+    let (head, tail) = compact.split_at(4);
+    let mut remainder = 0u32;
+    for &b in tail.iter().chain(head) {
+        let value = match b {
+            b'0'..=b'9' => u32::from(b - b'0'),
+            b'A'..=b'Z' => u32::from(b - b'A') + 10,
+            b'a'..=b'z' => u32::from(b - b'a') + 10,
+            // The regex only admits ASCII alphanumerics, so this is unreachable;
+            // reject defensively rather than panic on the detection path.
+            _ => return false,
+        };
+        // A letter contributes two decimal digits, a digit one — shift the
+        // remainder by the matching power of ten before folding the value in.
+        remainder = if value >= 10 {
+            (remainder * 100 + value) % 97
+        } else {
+            (remainder * 10 + value) % 97
+        };
+    }
+    remainder == 1
 }
 
 // ---------------------------------------------------------------------------
@@ -399,6 +618,98 @@ mod tests {
         let spans = detect_structured("mail me at a@b.com or use 123-45-6789");
         assert!(spans.iter().any(|s| s.ty == "EMAIL"));
         assert!(spans.iter().any(|s| s.ty == "US_SSN"));
+    }
+
+    #[test]
+    fn iban_accepts_valid_rejects_bad_checksum() {
+        // Published ISO 13616 test IBANs across countries, spaced and contiguous.
+        assert!(iban_ok("GB82 WEST 1234 5698 7654 32"));
+        assert!(iban_ok("DE89 3704 0044 0532 0130 00"));
+        assert!(iban_ok("FR14 2004 1010 0505 0001 3M02 606"));
+        assert!(iban_ok("NL91ABNA0417164300"));
+        // Norway — the shortest IBAN at 15 characters.
+        assert!(iban_ok("NO9386011117947"));
+        // A single transposed digit fails the mod-97 checksum.
+        assert!(!iban_ok("GB82 WEST 1234 5698 7654 33"));
+        // Too short to be any IBAN.
+        assert!(!iban_ok("GB82 WEST"));
+    }
+
+    #[test]
+    fn iban_rejects_wrong_length_for_country() {
+        // mod-97 alone would pass this recomputed-check 23-char `GB…`, but GB
+        // IBANs are fixed length 22 — the country-length gate rejects it.
+        assert!(!iban_ok("GB49 WEST 1234 5698 7654 321"));
+        // An unknown country code has no registered length.
+        assert!(!iban_ok("ZZ00 0000 0000 0000 0000 00"));
+    }
+
+    #[test]
+    fn detects_iban_across_countries() {
+        for iban in [
+            "pay to GB82 WEST 1234 5698 7654 32 today",
+            "send DE89 3704 0044 0532 0130 00 now",
+            "ref NL91ABNA0417164300 please",
+            // Burundi prints in non-four-char groups; the trimming validator
+            // accepts it where a four-group regex would not.
+            "to BI13 20001 10001 00001234567 89 ok",
+        ] {
+            let spans = detect_structured(iban);
+            assert!(spans.iter().any(|s| s.ty == "IBAN"), "missed: {iban}");
+        }
+    }
+
+    #[test]
+    fn iban_span_excludes_trailing_prose() {
+        // A greedy regex match runs into the following digits, but the validated
+        // span ends exactly at the IBAN — trailing text is not redacted.
+        let text = "iban GB82 WEST 1234 5698 7654 32 99999 done";
+        let span = detect_structured(text)
+            .into_iter()
+            .find(|s| s.ty == "IBAN")
+            .expect("IBAN detected");
+        assert_eq!(&text[span.start..span.end], "GB82 WEST 1234 5698 7654 32");
+    }
+
+    #[test]
+    fn iban_found_behind_iban_shaped_prefix() {
+        // A bogus `AA00 …` run is itself IBAN-shaped and would consume the whole
+        // candidate; the scan must still recover the real IBAN that follows it.
+        let text = "note AA00 GB82 WEST 1234 5698 7654 32 end";
+        let span = detect_structured(text)
+            .into_iter()
+            .find(|s| s.ty == "IBAN")
+            .expect("IBAN behind junk prefix");
+        assert_eq!(&text[span.start..span.end], "GB82 WEST 1234 5698 7654 32");
+    }
+
+    #[test]
+    fn detects_two_adjacent_ibans_in_one_candidate() {
+        // Two valid IBANs back-to-back fall inside a single greedy regex match;
+        // both must be detected, not just the first.
+        let text = "pay BE68 5390 0754 7034 and NO9386011117947 now";
+        let ibans: Vec<_> = detect_structured(text)
+            .into_iter()
+            .filter(|s| s.ty == "IBAN")
+            .map(|s| text[s.start..s.end].to_owned())
+            .collect();
+        assert_eq!(ibans, ["BE68 5390 0754 7034", "NO9386011117947"]);
+    }
+
+    #[test]
+    fn iban_bad_checksum_not_flagged() {
+        let spans = detect_structured("ref GB82 WEST 1234 5698 7654 33 here");
+        assert!(!spans.iter().any(|s| s.ty == "IBAN"));
+    }
+
+    /// The card detector also matches the digit run inside an IBAN; overlap
+    /// resolution must keep the single wider IBAN span, never fragment it.
+    #[test]
+    fn iban_not_fragmented_by_overlapping_card_match() {
+        let kept = resolve_overlaps(detect_structured("iban GB82 WEST 1234 5698 7654 32 end"));
+        let ibans: Vec<_> = kept.iter().filter(|s| s.ty == "IBAN").collect();
+        assert_eq!(ibans.len(), 1);
+        assert!(!kept.iter().any(|s| s.ty == "CREDIT_CARD"));
     }
 
     #[test]

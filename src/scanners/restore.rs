@@ -36,10 +36,17 @@ impl RestoreScanner {
     /// [`PiiScanner`](crate::scanners::PiiScanner)).
     #[must_use]
     pub fn for_pii() -> Self {
-        let types = ["EMAIL", "PHONE", "US_SSN", "IP_ADDRESS", "CREDIT_CARD"]
-            .into_iter()
-            .map(str::to_owned)
-            .collect();
+        let types = [
+            "EMAIL",
+            "PHONE",
+            "US_SSN",
+            "IP_ADDRESS",
+            "CREDIT_CARD",
+            "IBAN",
+        ]
+        .into_iter()
+        .map(str::to_owned)
+        .collect();
         Self {
             id: ScannerId("native:pii-restore"),
             types,
