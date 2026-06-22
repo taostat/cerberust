@@ -105,8 +105,15 @@ pub struct Vault {
     /// rehydrates only the input values and never echoes model-generated PII
     /// back. Restore eligibility is therefore per-sentinel, not per-type.
     restorable: std::collections::HashSet<String>,
-    /// Next counter to allocate per entity type.
+    /// Next counter to allocate per entity type. Because a new distinct value
+    /// bumps its type's counter and a deduped value does not, the final counter
+    /// per type is exactly the number of distinct values interned under it — the
+    /// content-free `by_entity_type` redaction tally.
     counters: HashMap<String, u32>,
+    /// Per-entity-type tally of restores performed against this vault, recorded
+    /// by the restore pass via [`Vault::note_restored`]. Counts only — never the
+    /// restored values — so it is safe to surface in a report.
+    restored: HashMap<String, u32>,
     /// How each sentinel's suffix is derived (random nonce already minted).
     suffix: Suffix,
 }
@@ -154,6 +161,7 @@ impl Vault {
             by_value: HashMap::new(),
             restorable: std::collections::HashSet::new(),
             counters: HashMap::new(),
+            restored: HashMap::new(),
             suffix,
         }
     }
@@ -235,6 +243,31 @@ impl Vault {
         self.by_placeholder
             .iter()
             .map(|(k, v)| (k.as_str(), v.as_str()))
+    }
+
+    /// Iterate `(entity_type, count)` for every type interned so far, where the
+    /// count is the number of distinct values redacted under that type. The keys
+    /// are entity **type** labels (`EMAIL`, `AWS_ACCESS_KEY`…), never values — so
+    /// a metrics consumer can diff this snapshot across a scanner run to attribute
+    /// redactions per type without ever touching plaintext.
+    pub fn interned_counts(&self) -> impl Iterator<Item = (&str, u32)> {
+        self.counters.iter().map(|(ty, n)| (ty.as_str(), *n))
+    }
+
+    /// Record that `n` sentinels of entity type `ty` were restored against this
+    /// vault. The restore pass calls this so a metrics consumer can read the
+    /// restored tally; it stores counts and the type label only.
+    pub fn note_restored(&mut self, ty: &str, n: u32) {
+        if n == 0 {
+            return;
+        }
+        *self.restored.entry(ty.to_owned()).or_insert(0) += n;
+    }
+
+    /// Iterate `(entity_type, count)` of restores recorded via
+    /// [`Vault::note_restored`]. Type labels and counts only.
+    pub fn restored_counts(&self) -> impl Iterator<Item = (&str, u32)> {
+        self.restored.iter().map(|(ty, n)| (ty.as_str(), *n))
     }
 }
 
@@ -444,6 +477,35 @@ mod tests {
         let a = v.intern("EMAIL", "alice@x.com", true);
         let b = v.intern("EMAIL", "bob@y.com", true);
         assert_ne!(a, b);
+    }
+
+    #[test]
+    fn interned_counts_track_distinct_values_per_type() {
+        let mut v = Vault::with_nonce("deadbeef".to_owned());
+        v.intern("EMAIL", "a@b.com", true);
+        v.intern("EMAIL", "c@d.com", true);
+        v.intern("EMAIL", "a@b.com", true); // dedupe: no new count
+        v.intern("PHONE", "555-1234", true);
+        let counts: std::collections::BTreeMap<_, _> = v
+            .interned_counts()
+            .map(|(ty, n)| (ty.to_owned(), n))
+            .collect();
+        assert_eq!(counts.get("EMAIL"), Some(&2));
+        assert_eq!(counts.get("PHONE"), Some(&1));
+    }
+
+    #[test]
+    fn restored_counts_accumulate_per_type() {
+        let mut v = Vault::new();
+        v.note_restored("EMAIL", 2);
+        v.note_restored("EMAIL", 1);
+        v.note_restored("PHONE", 0); // a zero is a no-op
+        let counts: std::collections::BTreeMap<_, _> = v
+            .restored_counts()
+            .map(|(ty, n)| (ty.to_owned(), n))
+            .collect();
+        assert_eq!(counts.get("EMAIL"), Some(&3));
+        assert_eq!(counts.get("PHONE"), None);
     }
 
     #[test]

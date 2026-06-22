@@ -107,7 +107,15 @@ impl Scanner for RestoreScanner {
             return Ok(Verdict::transformed(Cow::Borrowed(text)));
         }
         let sub = Substituter::from_pairs(pairs.iter().map(|(s, o)| (s.as_str(), o.as_str())));
-        Ok(Verdict::transformed(Cow::Owned(sub.substitute(text))))
+        let (restored, counts) = sub.substitute_counting(text);
+        // Record the per-type restore tally so a metrics consumer can read it off
+        // the vault. Type labels and counts only — never the restored values.
+        for (sentinel, n) in counts {
+            if let Some(ty) = Self::sentinel_type(&sentinel) {
+                ctx.vault.note_restored(ty, n);
+            }
+        }
+        Ok(Verdict::transformed(Cow::Owned(restored)))
     }
 
     fn hold_back(&self) -> HoldBack {
