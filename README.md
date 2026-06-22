@@ -24,9 +24,9 @@ It's a Rust answer to Python's
 and **streaming-safe**, with a regex engine that can't be tripped into
 catastrophic backtracking.
 
-> cerberust grew out of the guardrail layer inside **[gm](https://saygm.com)** —
-> confidential, TEE-sealed LLM inference — and was hardened in production there
-> before being opened up.
+> cerberust began as the guardrail layer for **[gm](https://saygm.com)** —
+> confidential, TEE-sealed LLM inference — and is developed in the open as a
+> standalone library.
 
 ---
 
@@ -91,17 +91,23 @@ including streaming.
 
 ## The scanner lineup
 
-| Scanner | Protects you from | Default |
+**cerberust is pass-through by default.** Nothing runs until you add it to a
+`ScannerStack`, so every scanner is opt-in by construction — you compose exactly the
+ones you want. The *mode* below is what each does once you include it.
+(`PromptInjectionScanner` and `WasmScanner` additionally sit behind off-by-default
+cargo features, since they pull heavy dependencies.)
+
+| Scanner | Protects you from | Mode when added |
 |---|---|---|
-| [`PiiScanner`](docs/scanners/pii.md) | leaking emails, phone numbers, credit cards, IPs, SSNs, and IBANs to a model provider | on, restores by default |
-| [`SecretScanner`](docs/scanners/secrets.md) | API keys, tokens, and private keys pasted into a prompt reaching a provider or being echoed back | on, one-way |
-| [`RegexScanner`](docs/scanners/regex.md) | your *own* sensitive formats — ticket ids, account numbers, internal tokens | opt-in (you supply patterns) |
-| [`BanSubstringsScanner`](docs/scanners/ban-substrings.md) | specific phrases you never want in a prompt or a reply | opt-in |
-| [`BanTopicsScanner`](docs/scanners/ban-topics.md) | whole subjects you've ruled out, defined by keywords | opt-in |
-| [`TokenLimitScanner`](docs/scanners/token-limit.md) | oversized prompts blowing your context budget or your bill | opt-in |
-| [`RestoreScanner`](docs/scanners/restore.md) | — (the output half that puts redacted PII back in the reply) | pair with a round-trip scanner |
-| [`PromptInjectionScanner`](docs/scanners/prompt-injection.md) | jailbreaks and "ignore your instructions" attacks | **off** (ML model, opt-in) |
-| [`WasmScanner`](docs/scanners/wasm-guards.md) | running an *untrusted* custom guard safely (sandboxed, no egress) | **off** (opt-in feature) |
+| [`PiiScanner`](docs/scanners/pii.md) | leaking emails, phone numbers, credit cards, IPs, SSNs, and IBANs to a model provider | redact (round-trip — restore in the reply) |
+| [`SecretScanner`](docs/scanners/secrets.md) | API keys, tokens, and private keys pasted into a prompt reaching a provider or being echoed back | redact, one-way (never restored) |
+| [`RegexScanner`](docs/scanners/regex.md) | your *own* sensitive formats — ticket ids, account numbers, internal tokens | redact your patterns |
+| [`BanSubstringsScanner`](docs/scanners/ban-substrings.md) | specific phrases you never want in a prompt or a reply | block on match |
+| [`BanTopicsScanner`](docs/scanners/ban-topics.md) | whole subjects you've ruled out, defined by keywords | block on match |
+| [`TokenLimitScanner`](docs/scanners/token-limit.md) | oversized prompts blowing your context budget or your bill | block when over the limit |
+| [`RestoreScanner`](docs/scanners/restore.md) | — (the output half that puts redacted PII back in the reply) | restores a round-trip scanner |
+| [`PromptInjectionScanner`](docs/scanners/prompt-injection.md) | jailbreaks and "ignore your instructions" attacks | block · needs `prompt-injection` feature |
+| [`WasmScanner`](docs/scanners/wasm-guards.md) | running an *untrusted* custom guard safely (sandboxed, no egress) | runs your guard · needs `wasm` feature |
 
 ## Benchmarks at a glance
 
@@ -149,11 +155,10 @@ cerberust = { version = "0.1", features = ["wasm"] }
 
 ## From the team behind gm
 
-cerberust is the guardrail layer inside **[gm](https://saygm.com)** — confidential
-LLM inference on Bittensor. Point your existing OpenAI, Anthropic, or Gemini SDK at
-the gm gateway and get identical behavior, sealed inside an Intel TDX enclave so no
-operator or host ever sees your prompts — with these same guardrails running
-in-enclave.
+cerberust is the open-source guardrail library from **[gm](https://saygm.com)** —
+confidential LLM inference on Bittensor. Point your existing OpenAI, Anthropic, or
+Gemini SDK at the gm gateway and get identical behavior, sealed inside an Intel TDX
+enclave so no operator or host ever sees your prompts.
 
 <p align="center"><strong><a href="https://saygm.com">→ saygm.com</a></strong></p>
 
