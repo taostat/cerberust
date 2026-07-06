@@ -159,9 +159,10 @@ fn structured_rules() -> &'static StructuredRules {
 }
 
 /// Detect structured PII: `EMAIL`, `PHONE`, `US_SSN`, `IP_ADDRESS`,
-/// `CREDIT_CARD` (Luhn-checked), `IBAN` (mod-97-checked). Checksums gate the
-/// candidates that would otherwise over-match (a random 16-digit number is not
-/// a card; a random `GB00…` string is not an IBAN).
+/// `CREDIT_CARD` (issuer-prefix + Luhn-checked), `IBAN` (mod-97-checked).
+/// Checksums and issuer prefixes gate the candidates that would otherwise
+/// over-match (a random 18-digit Discord snowflake is not a card even if it
+/// happens to pass Luhn; a random `GB00…` string is not an IBAN).
 #[must_use]
 pub fn detect_structured(text: &str) -> Vec<Span> {
     let r = structured_rules();
@@ -181,7 +182,7 @@ pub fn detect_structured(text: &str) -> Vec<Span> {
         }
     }
     for m in r.digits.find_iter(text) {
-        if luhn_ok(m.as_str()) {
+        if card_number_ok(m.as_str()) {
             spans.push(Span::new(m.start(), m.end(), "CREDIT_CARD", 0.95));
         }
     }
@@ -199,15 +200,57 @@ fn is_valid_ipv4(s: &str) -> bool {
     octets.len() == 4 && octets.iter().all(|o| o.parse::<u8>().is_ok())
 }
 
+/// A credit-card candidate must be both Luhn-valid and in a reasonably precise
+/// issuer range. Luhn alone is too weak for machine identifiers: Discord
+/// snowflakes, order IDs, and chain metadata are often 17-19 bare digits, and
+/// about one in ten such numbers pass Luhn by chance.
+fn card_number_ok(s: &str) -> bool {
+    let digits = digit_string(s);
+    issuer_prefix_ok(&digits) && luhn_digits_ok(digits.as_bytes())
+}
+
+fn digit_string(s: &str) -> String {
+    s.chars().filter(char::is_ascii_digit).collect()
+}
+
+fn issuer_prefix_ok(digits: &str) -> bool {
+    let len = digits.len();
+    let prefix2 = prefix(digits, 2);
+    let prefix3 = prefix(digits, 3);
+    let prefix4 = prefix(digits, 4);
+    let prefix6 = prefix(digits, 6);
+
+    (digits.starts_with('4') && matches!(len, 13 | 16 | 19))
+        || (matches!(prefix2, Some(51..=55)) && len == 16)
+        || (matches!(prefix4, Some(2221..=2720)) && len == 16)
+        || (matches!(prefix2, Some(34 | 37)) && len == 15)
+        || (matches!(prefix4, Some(6011)) && matches!(len, 16 | 19))
+        || (matches!(prefix2, Some(65)) && matches!(len, 16 | 19))
+        || (matches!(prefix3, Some(644..=649)) && matches!(len, 16 | 19))
+        || (matches!(prefix6, Some(622126..=622925)) && matches!(len, 16 | 19))
+        || (matches!(prefix3, Some(300..=305)) && len == 14)
+        || (matches!(prefix2, Some(36 | 38 | 39)) && len == 14)
+        || (matches!(prefix4, Some(3528..=3589)) && matches!(len, 16..=19))
+}
+
+fn prefix(s: &str, len: usize) -> Option<u32> {
+    s.get(..len)?.parse().ok()
+}
+
 /// Luhn mod-10 checksum over a possibly-spaced/hyphenated digit string.
+#[cfg(test)]
 fn luhn_ok(s: &str) -> bool {
-    let digits: Vec<u32> = s.chars().filter_map(|c| c.to_digit(10)).collect();
+    let digits = digit_string(s);
+    luhn_digits_ok(digits.as_bytes())
+}
+
+fn luhn_digits_ok(digits: &[u8]) -> bool {
     if digits.len() < 13 || digits.len() > 19 {
         return false;
     }
     let mut sum = 0u32;
     for (i, &d) in digits.iter().rev().enumerate() {
-        let mut d = d;
+        let mut d = u32::from(d - b'0');
         if i % 2 == 1 {
             d *= 2;
             if d > 9 {
@@ -605,6 +648,33 @@ mod tests {
         assert!(luhn_ok("4111 1111 1111 1111"));
         assert!(!luhn_ok("4111 1111 1111 1112"));
         assert!(!luhn_ok("1234 5678 9012 3456"));
+    }
+
+    #[test]
+    fn card_detector_requires_plausible_issuer_not_just_luhn() {
+        // Discord snowflake from Graham's baked team list. It is Luhn-valid, but
+        // it is not a plausible payment-card number and must not inflate the
+        // dashboard's credit-card redaction count on every Graham request.
+        let snowflake = "689802468376313879";
+        assert!(luhn_ok(snowflake));
+        assert!(!card_number_ok(snowflake));
+        assert!(!detect_structured(snowflake)
+            .iter()
+            .any(|s| s.ty == "CREDIT_CARD"));
+
+        for card in [
+            "4111 1111 1111 1111",
+            "5555 5555 5555 4444",
+            "3782 822463 10005",
+            "6011-1111-1111-1117",
+            "3530 1113 3330 0000",
+        ] {
+            assert!(card_number_ok(card), "missed card: {card}");
+            assert!(
+                detect_structured(card).iter().any(|s| s.ty == "CREDIT_CARD"),
+                "missed card span: {card}"
+            );
+        }
     }
 
     #[test]

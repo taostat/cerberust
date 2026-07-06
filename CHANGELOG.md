@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.1]
+
+### Fixed
+
+- **`PiiScanner` credit-card detection now requires a plausible issuer prefix
+  as well as a Luhn-valid digit run.** This keeps real Visa/Mastercard/Amex/
+  Discover/Diners/JCB-style cards redacted, while avoiding false positives from
+  machine identifiers such as Discord snowflakes that happen to pass Luhn.
+
 ### Changed
 
 - **`StreamOutput` no longer borrows the `ScannerStack` for its lifetime.** It is
@@ -90,5 +99,6 @@ Initial public release.
 - **Benchmark harness** (`benchmarks/`) — head-to-head precision/recall and
   throughput against Python's `llm-guard` over a shared labelled corpus.
 
-[Unreleased]: https://github.com/taostat/cerberust/compare/v0.1.0...HEAD
+[Unreleased]: https://github.com/taostat/cerberust/compare/v0.1.1...HEAD
+[0.1.1]: https://github.com/taostat/cerberust/compare/v0.1.0...v0.1.1
 [0.1.0]: https://github.com/taostat/cerberust/releases/tag/v0.1.0

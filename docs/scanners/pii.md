@@ -19,8 +19,9 @@ the real value back in the reply so your user still sees their own data.
 - **Your user's experience is unchanged.** They typed their email; they read their
   email back. The round-trip is invisible to them.
 - **It's checksum-backed, so it doesn't cry wolf.** A 16-digit number is only
-  flagged as a card if it passes the Luhn checksum; an IP is validated octet by
-  octet. You get high precision, not a wall of false positives.
+  flagged as a card if it has a plausible issuer prefix and passes the Luhn
+  checksum; an IP is validated octet by octet. You get high precision, not a
+  wall of false positives.
 
 ## Quick example
 
@@ -54,7 +55,8 @@ checksum** so it doesn't over-match:
 - **IP address** — dotted-quad, then validated so each octet is 0–255 (so
   `999.1.1.1` is rejected).
 - **Credit card** — 13–19 digits, optionally space/hyphen grouped, then gated by
-  the **Luhn checksum**, so a random 16-digit order number isn't mistaken for a card.
+  a plausible issuer prefix and the **Luhn checksum**, so machine identifiers
+  are not mistaken for cards just because they pass Luhn by chance.
 - **IBAN** — an ISO 13616 international bank account number, gated by the
   country-specific length **and** the **mod-97 checksum**, so a random `GB00…`
   string isn't mistaken for an account.

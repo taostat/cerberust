@@ -1,6 +1,6 @@
 [package]
 name = "cerberust"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2021"
 rust-version = "1.83"
 description = "Fast Rust guardrails for LLM input/output — composable scanners (PII, secrets, prompt-injection) and streaming middleware."
