@@ -32,7 +32,7 @@ regex = "1.11"
 # unified in Cargo.lock and `cargo deny` stays clean.
 regex-automata = "0.4"
 zeroize = { version = "1.8", features = ["derive"] }
-rand = "0.8"
+rand = "0.10"
 hex = "0.4"
 
 # Keyed-deterministic sentinel suffixes (the Vault's `NonceStrategy::Deterministic`
@@ -42,8 +42,8 @@ hex = "0.4"
 # reference implementations, share the `digest` 0.10 trait crate (versions unify
 # in Cargo.lock, `cargo deny` stays clean), and `sha2` carries no system
 # dependency.
-hmac = "0.12"
-sha2 = "0.10"
+hmac = "0.13"
+sha2 = "0.11"
 
 # The WASM guard runner (feature `wasm`). `wasmtime` is the reference
 # WebAssembly Component Model runtime; it loads a user-submitted guard component
@@ -56,7 +56,7 @@ sha2 = "0.10"
 # only at load/trap boundaries and wrapped in `WasmLoadError`/`ScanError`.
 # Pinned to the 44.x line: 45.x raises wasmtime's MSRV to rustc 1.93, above this
 # crate's 1.83 floor and the current toolchain.
-wasmtime = { version = "44.0.3", default-features = false, features = [
+wasmtime = { version = "46.0.1", default-features = false, features = [
     "runtime",
     "component-model",
     "cranelift",
