@@ -2,7 +2,7 @@
 name = "cerberust"
 version = "0.1.1"
 edition = "2021"
-rust-version = "1.83"
+rust-version = "1.88"
 description = "Fast Rust guardrails for LLM input/output — composable scanners (PII, secrets, prompt-injection) and streaming middleware."
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/taostat/cerberust"
@@ -50,13 +50,15 @@ sha2 = "0.10"
 # and — instantiated against an import-less linker — runs it as a pure
 # `scan(text) -> verdict` function with no ambient authority (no WASI, no
 # network, no clock). This is the load-bearing sandbox for running untrusted
-# third-party guards, so the runtime is the dependency that earns its weight. `default-features = false` drops the `wat`/`wast` text
-# tooling and `winch`, keeping only the `cranelift` compiler and the
-# `component-model` runtime. `anyhow` is wasmtime's own error type, surfaced
-# only at load/trap boundaries and wrapped in `WasmLoadError`/`ScanError`.
-# Pinned to the 44.x line: 45.x raises wasmtime's MSRV to rustc 1.93, above this
-# crate's 1.83 floor and the current toolchain.
-wasmtime = { version = "44.0.3", default-features = false, features = [
+# third-party guards, so the runtime is the dependency that earns its weight.
+# `default-features = false` drops the `wat`/`wast` text tooling and `winch`,
+# keeping only the `cranelift` compiler and the `component-model` runtime.
+# `anyhow` is wasmtime's own error type, surfaced only at load/trap boundaries
+# and wrapped in `WasmLoadError`/`ScanError`.
+# Pinned to the 36.x long-term-support line, which receives security fixes and
+# requires rustc 1.86. This crate's `rust-version` (1.88) is set by `ort` and by
+# current `encoding_rs` releases in the wasmtime tree.
+wasmtime = { version = "36.0.16", default-features = false, features = [
     "runtime",
     "component-model",
     "cranelift",

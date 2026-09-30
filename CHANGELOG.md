@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Security
+
+- **`wasm` feature: move `wasmtime` from 44.0.3 to the 36.x long-term-support
+  line (36.0.16)**, fixing RUSTSEC-2026-0222, RUSTSEC-2026-0269 and
+  RUSTSEC-2026-0316.
+
+### Changed
+
+- **Minimum supported Rust version is now 1.88** (was 1.83). wasmtime 36
+  requires 1.86; `ort` (`prompt-injection` feature) and current `encoding_rs`
+  releases (`wasm` feature) require 1.88.
+
 ## [0.1.1]
 
 ### Fixed
