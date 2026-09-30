@@ -71,6 +71,15 @@ Four layers of detection, all emitting spans into the shared redact path:
    and rules gitleaks scopes to file paths (a prompt has no path). The full list,
    with reasons, is `EXCLUDED` in `src/scanner/gitleaks_rules.rs`.
 
+   Known limits of the ported rules: `heroku-api-key` matches any UUID assigned
+   near the word "heroku" (Heroku keys are UUIDs), and `twilio-api-key` matches
+   any `SK` followed by 32 hex characters. gitleaks' detection of secrets
+   inside base64- or hex-encoded text is not ported; encoded secrets are left to
+   the entropy backstop. `sourcegraph-access-token` stays keyword-gated even
+   though its keyword can sit outside the token (its bare 40-hex form would
+   match every git SHA), so on a stream a Sourcegraph token whose keyword was
+   flushed in an earlier chunk is missed.
+
    When an original pattern and a ported rule match the same span, the original
    type name wins (`AWS_ACCESS_KEY`, `GITHUB_TOKEN`, …), so existing
    placeholders keep their names. Ported rules name their placeholders after

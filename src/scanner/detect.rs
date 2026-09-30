@@ -481,17 +481,16 @@ struct SecretRule {
 /// compiled detector regexes and the streaming hold-back DFA read.
 const SECRET_PATTERNS: [(&str, &str); 11] = [
     ("AWS_ACCESS_KEY", r"AKIA[0-9A-Z]{16}"),
-    // Taostats user-management API keys: `<product>_live_` + 32 random bytes as
-    // hex, for the GM, Blockmachine and Taostats tenants. Hex after an
-    // underscore prefix is neither hex-only nor high enough entropy for the
-    // backstop, so these need an explicit rule.
+    // GM, Blockmachine and Taostats API keys: `gm_live_` / `bm_live_` /
+    // `ts_live_` followed by 64 lowercase hex characters. The entropy backstop
+    // does not flag them (not pure hex, and hex entropy stays low), so they need
+    // an explicit rule.
     ("GM_API_KEY", r"(?-u:\b)gm_live_[0-9a-f]{64}(?-u:\b)"),
     (
         "BLOCKMACHINE_API_KEY",
         r"(?-u:\b)bm_live_[0-9a-f]{64}(?-u:\b)",
     ),
-    // Taostats API keys: `tao-<uuid>:<8-hex HMAC>` (management API) and the
-    // user-management API's `ts_live_` keys.
+    // Taostats API keys: `tao-<uuid>:<8 hex>`, and `ts_live_` keys.
     (
         "TAOSTATS_API_KEY",
         r"(?-u:\b)(?:tao-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}:[0-9a-f]{8}|ts_live_[0-9a-f]{64})(?-u:\b)",

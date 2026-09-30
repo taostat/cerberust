@@ -362,6 +362,21 @@ mod tests {
     }
 
     #[test]
+    fn every_allowlist_regex_compiles() {
+        // `compile_all` drops a regex that fails to compile; none may.
+        for rule in RULES {
+            for list in rule.allowlists {
+                for re in list.regexes {
+                    assert!(Regex::new(re).is_ok(), "{}: {re}", rule.id);
+                }
+            }
+        }
+        for re in GLOBAL_REGEXES {
+            assert!(Regex::new(re).is_ok(), "global: {re}");
+        }
+    }
+
+    #[test]
     fn excluded_rules_are_not_ported() {
         for (id, _) in EXCLUDED {
             assert!(
