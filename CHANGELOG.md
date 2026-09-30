@@ -7,6 +7,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.0]
+
+### Added
+
+- **`SecretScanner` recognizes 200 vendor credential formats ported from
+  gitleaks v8.30.1**, generated from the vendored upstream config and matched
+  with gitleaks' keyword prefilter, secret group, entropy minimum and
+  allowlists. Generic, identifier, public-key and path-scoped rules are
+  excluded (listed with reasons in `EXCLUDED`).
+- **Taostats API keys** (`gm_live_`, `bm_live_`, `ts_live_`, `tao-<uuid>:<sig>`).
+- **BIP39 seed phrases** (12–24 checksum-valid wordlist words), redacted as
+  `SEED_PHRASE`.
+- A negative corpus and precision test requiring zero detections from the new
+  rules on ordinary prompt content.
+
+### Changed
+
+- The streaming hold-back DFA is compiled once per pattern set and reused across
+  streams, and keeps its lazy state cache across pushes.
+- Secret-scanner throughput on the benchmark corpus is about a third of 0.1.1's
+  (~440k samples/s), the cost of the added rules.
+- A span matched by both an original vendor pattern and a ported rule keeps the
+  original type name; spans only the new rules find use new type names (the
+  gitleaks rule id upper-cased).
+
 ## [0.1.1]
 
 ### Fixed
@@ -99,6 +124,7 @@ Initial public release.
 - **Benchmark harness** (`benchmarks/`) — head-to-head precision/recall and
   throughput against Python's `llm-guard` over a shared labelled corpus.
 
-[Unreleased]: https://github.com/taostat/cerberust/compare/v0.1.1...HEAD
+[Unreleased]: https://github.com/taostat/cerberust/compare/v0.2.0...HEAD
+[0.2.0]: https://github.com/taostat/cerberust/compare/v0.1.1...v0.2.0
 [0.1.1]: https://github.com/taostat/cerberust/compare/v0.1.0...v0.1.1
 [0.1.0]: https://github.com/taostat/cerberust/releases/tag/v0.1.0
