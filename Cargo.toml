@@ -2,7 +2,7 @@
 name = "cerberust"
 version = "0.1.1"
 edition = "2021"
-rust-version = "1.96"
+rust-version = "1.88"
 description = "Fast Rust guardrails for LLM input/output — composable scanners (PII, secrets, prompt-injection) and streaming middleware."
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/taostat/cerberust"
@@ -53,14 +53,17 @@ sha2 = "0.10"
 # third-party guards, so the runtime is the dependency that earns its weight.
 # `default-features = false` drops the `wat`/`wast` text tooling and `winch`,
 # keeping only the `cranelift` compiler and the `component-model` runtime.
-# wasmtime's errors surface only at load/trap boundaries and are wrapped in
-# `WasmLoadError`/`ScanError`. wasmtime 49 requires rustc 1.96, which sets this
-# crate's `rust-version`.
-wasmtime = { version = "49.0.1", default-features = false, features = [
+# `anyhow` is wasmtime's own error type, surfaced only at load/trap boundaries
+# and wrapped in `WasmLoadError`/`ScanError`.
+# Pinned to the 36.x long-term-support line, which receives security fixes and
+# requires rustc 1.86. This crate's `rust-version` (1.88) is set by `ort` and by
+# current `encoding_rs` releases in the wasmtime tree.
+wasmtime = { version = "36.0.16", default-features = false, features = [
     "runtime",
     "component-model",
     "cranelift",
 ], optional = true }
+anyhow = { version = "1.0", optional = true }
 
 # The ML PromptInjection scanner (feature `prompt-injection`). `ort` is the Rust
 # binding to ONNX Runtime; `download-binaries` (an ort default feature) fetches a
@@ -83,7 +86,7 @@ tokenizers = { version = "0.23", default-features = false, features = [
 [features]
 # Off by default so the core scanner library stays lean (the wasmtime runtime is
 # a large dependency tree). Turn on to load and run sandboxed WASM guards.
-wasm = ["dep:wasmtime"]
+wasm = ["dep:wasmtime", "dep:anyhow"]
 # Off by default so the core scanner library stays lean (the ort/ONNX Runtime and
 # tokenizers trees are large). Turn on for the ML PromptInjection scanner.
 prompt-injection = ["dep:ort", "dep:tokenizers"]
