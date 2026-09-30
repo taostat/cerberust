@@ -19,8 +19,11 @@
 
 use std::sync::OnceLock;
 
-use aho_corasick::{AhoCorasick, AhoCorasickBuilder, MatchKind};
-use regex::{Captures, Regex};
+use aho_corasick::{AhoCorasick, AhoCorasickBuilder, AhoCorasickKind, MatchKind};
+use regex::Regex;
+use regex_automata::meta;
+use regex_automata::util::captures::Captures;
+use regex_automata::Input;
 
 use super::detect::Span;
 use super::gitleaks_rules::{GLOBAL_REGEXES, GLOBAL_STOPWORDS, RULES};
@@ -75,7 +78,9 @@ struct CompiledAllowlist {
 
 struct CompiledRule {
     rule: &'static Rule,
-    re: Regex,
+    re: meta::Regex,
+    /// Longest possible match in bytes; `None` when unbounded.
+    max_len: Option<usize>,
     allowlists: Vec<CompiledAllowlist>,
 }
 
@@ -101,9 +106,12 @@ fn compiled() -> &'static Compiled {
         for rule in RULES {
             // Every generated regex compiles (the generator checks); a failure
             // here would drop that one rule rather than panic.
-            let Ok(re) = Regex::new(rule.regex) else {
+            let Ok(re) = meta::Regex::new(rule.regex) else {
                 continue;
             };
+            let max_len = regex_automata::util::syntax::parse(rule.regex)
+                .ok()
+                .and_then(|hir| hir.properties().maximum_len());
             let index = rules.len();
             for kw in rule.keywords {
                 if let Some(pos) = keyword_list.iter().position(|k| *k == *kw) {
@@ -126,12 +134,14 @@ fn compiled() -> &'static Compiled {
             rules.push(CompiledRule {
                 rule,
                 re,
+                max_len,
                 allowlists,
             });
         }
         let keywords = AhoCorasickBuilder::new()
             .ascii_case_insensitive(true)
             .match_kind(MatchKind::Standard)
+            .kind(Some(AhoCorasickKind::DFA))
             .build(&keyword_list)
             .ok();
         Compiled {
@@ -176,35 +186,80 @@ fn hold_back_source(regex: &str) -> String {
 }
 
 /// Detect secrets with the ported gitleaks rules.
+///
+/// A gated rule's match always contains one of its keywords, so its regex runs
+/// only over windows around the keyword hits, each widened by the rule's
+/// longest possible match (the whole text when unbounded). Look-around at a
+/// window's edge still sees the surrounding bytes.
 #[must_use]
 pub(crate) fn detect(text: &str) -> Vec<Span> {
     let c = compiled();
     let Some(keywords) = &c.keywords else {
         return Vec::new();
     };
-    let mut candidate: Vec<bool> = c.rules.iter().map(|r| !r.rule.gated).collect();
+    // Per rule: keyword hit spans, or `None` if the rule does not run.
+    let mut hits: Vec<Option<Vec<(usize, usize)>>> = c
+        .rules
+        .iter()
+        .map(|r| (!r.rule.gated).then(Vec::new))
+        .collect();
     for m in keywords.find_overlapping_iter(text) {
         for &i in &c.keyword_rules[m.pattern().as_usize()] {
-            candidate[i] = true;
+            hits[i]
+                .get_or_insert_with(Vec::new)
+                .push((m.start(), m.end()));
         }
     }
     let mut spans = Vec::new();
-    for (i, rule) in c.rules.iter().enumerate() {
-        if !candidate[i] {
+    for (rule, rule_hits) in c.rules.iter().zip(hits) {
+        let Some(rule_hits) = rule_hits else {
             continue;
-        }
-        for caps in rule.re.captures_iter(text) {
-            if let Some(span) = finding(c, rule, &caps) {
-                spans.push(span);
+        };
+        let windows = match (rule.rule.gated, rule.max_len) {
+            (true, Some(max_len)) => windows(&rule_hits, max_len, text.len()),
+            _ => vec![(0, text.len())],
+        };
+        let mut caps = rule.re.create_captures();
+        for (from, to) in windows {
+            let mut input = Input::new(text).span(from..to);
+            while let Some(m) = {
+                rule.re.search_captures(&input, &mut caps);
+                caps.get_match()
+            } {
+                if let Some(span) = finding(c, rule, text, &caps) {
+                    spans.push(span);
+                }
+                // An empty match must still advance.
+                let next = if m.is_empty() { m.end() + 1 } else { m.end() };
+                if next > to {
+                    break;
+                }
+                input.set_start(next);
             }
         }
     }
     spans
 }
 
-fn finding(c: &Compiled, rule: &CompiledRule, caps: &Captures<'_>) -> Option<Span> {
+/// Merge keyword hits into search windows: a match containing the hit at
+/// `start..end` begins no earlier than `end - max_len` and ends no later than
+/// `start + max_len`.
+fn windows(hits: &[(usize, usize)], max_len: usize, len: usize) -> Vec<(usize, usize)> {
+    let mut out: Vec<(usize, usize)> = Vec::new();
+    for &(start, end) in hits {
+        let from = end.saturating_sub(max_len);
+        let to = (start + max_len).min(len);
+        match out.last_mut() {
+            Some(last) if from <= last.1 => last.1 = last.1.max(to),
+            _ => out.push((from, to)),
+        }
+    }
+    out
+}
+
+fn finding(c: &Compiled, rule: &CompiledRule, text: &str, caps: &Captures) -> Option<Span> {
     let secret = secret_match(rule.rule.secret_group, caps)?;
-    let value = secret.as_str();
+    let value = &text[secret.0..secret.1];
     if rule.rule.entropy > 0.0 && shannon_entropy(value) <= rule.rule.entropy {
         return None;
     }
@@ -214,28 +269,25 @@ fn finding(c: &Compiled, rule: &CompiledRule, caps: &Captures<'_>) -> Option<Spa
     if rule.allowlists.iter().any(|a| allowed(a, value)) {
         return None;
     }
-    Some(Span::new(
-        secret.start(),
-        secret.end(),
-        rule.rule.ty,
-        CONFIDENCE,
-    ))
+    Some(Span::new(secret.0, secret.1, rule.rule.ty, CONFIDENCE))
 }
 
 /// gitleaks' secret selection: the configured group, else the first non-empty
 /// capture group, else the whole match. A configured group that did not
 /// participate yields no finding.
-fn secret_match<'t>(group: usize, caps: &Captures<'t>) -> Option<regex::Match<'t>> {
-    if caps.len() < 2 {
-        return caps.get(0);
+fn secret_match(group: usize, caps: &Captures) -> Option<(usize, usize)> {
+    let groups = caps.group_len();
+    let span = |i: usize| caps.get_group(i).map(|s| (s.start, s.end));
+    if groups < 2 {
+        return span(0);
     }
     if group > 0 {
-        return caps.get(group);
+        return span(group);
     }
-    (1..caps.len())
-        .filter_map(|i| caps.get(i))
-        .find(|m| !m.as_str().is_empty())
-        .or_else(|| caps.get(0))
+    (1..groups)
+        .filter_map(span)
+        .find(|(start, end)| end > start)
+        .or_else(|| span(0))
 }
 
 fn contains_stopword(secret: &str, stopwords: &[&str]) -> bool {
@@ -317,6 +369,37 @@ mod tests {
                 "{id} is excluded but ported"
             );
         }
+    }
+
+    #[test]
+    fn windows_cover_every_match_containing_a_hit_and_merge() {
+        // Hit at 50..54, max match 10: a match holding it lies within 44..60.
+        assert_eq!(windows(&[(50, 54)], 10, 100), vec![(44, 60)]);
+        // Overlapping windows merge; the start clamps at 0 and the end at len.
+        assert_eq!(windows(&[(2, 4), (8, 10)], 6, 12), vec![(0, 12)]);
+        assert_eq!(
+            windows(&[(0, 4), (80, 84)], 10, 100),
+            vec![(0, 10), (74, 90)]
+        );
+    }
+
+    #[test]
+    fn windowed_search_keeps_word_boundary_context() {
+        // `\b` before a Datadog-style hex token must see the byte before the
+        // window: a token glued to a preceding word is not a match.
+        let key = "0123456789abcdef".repeat(2) + "01234567";
+        let glued = format!("datadog x{key}");
+        let spaced = format!("datadog {key}");
+        let ty = "DATADOG_ACCESS_TOKEN";
+        assert_eq!(
+            detect(&glued).iter().any(|s| s.ty == ty),
+            Regex::new(RULES.iter().find(|r| r.ty == ty).unwrap().regex)
+                .unwrap()
+                .is_match(&glued)
+        );
+        assert!(detect(&spaced)
+            .iter()
+            .all(|s| s.start >= "datadog ".len() || s.ty != ty));
     }
 
     #[test]

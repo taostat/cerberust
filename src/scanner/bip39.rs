@@ -15,6 +15,8 @@
 //! On a stream, [`hold_floor`] holds back a trailing run of list words so a
 //! phrase is never split across a flush.
 
+use std::collections::HashMap;
+use std::hash::{BuildHasherDefault, Hasher};
 use std::sync::OnceLock;
 
 use sha2::{Digest, Sha256};
@@ -40,21 +42,55 @@ fn words() -> &'static [&'static str] {
     })
 }
 
-/// Wordlist index of an ASCII-letter `word` (case-insensitive). BIP39 English
-/// words are 3–8 lowercase letters, so anything else is rejected before lookup.
-fn index_of(word: &[u8]) -> Option<u16> {
+/// Pack a lower-cased word of at most 8 ASCII letters into a `u64` key.
+fn pack(word: &[u8]) -> Option<u64> {
     if !(3..=8).contains(&word.len()) {
         return None;
     }
-    let mut lower = [0u8; 8];
-    for (dst, &b) in lower.iter_mut().zip(word) {
-        *dst = b.to_ascii_lowercase();
+    Some(word.iter().fold(0u64, |acc, &b| {
+        (acc << 8) | u64::from(b.to_ascii_lowercase())
+    }))
+}
+
+/// Hasher for packed-word keys: they are already well spread 64-bit values,
+/// so one multiply replaces `SipHash` on the per-word hot path. The keys are
+/// the fixed wordlist, so hash flooding is not a concern.
+#[derive(Default)]
+struct PackedHasher(u64);
+
+impl Hasher for PackedHasher {
+    fn finish(&self) -> u64 {
+        self.0
     }
-    let lower = &lower[..word.len()];
-    words()
-        .binary_search_by(|w| w.as_bytes().cmp(lower))
-        .ok()
-        .and_then(|i| u16::try_from(i).ok())
+
+    fn write(&mut self, bytes: &[u8]) {
+        for &b in bytes {
+            self.0 = (self.0 << 8 | u64::from(b)).wrapping_mul(0x9E37_79B9_7F4A_7C15);
+        }
+    }
+
+    fn write_u64(&mut self, key: u64) {
+        self.0 = key.wrapping_mul(0x9E37_79B9_7F4A_7C15);
+    }
+}
+
+type Lookup = HashMap<u64, u16, BuildHasherDefault<PackedHasher>>;
+
+fn lookup() -> &'static Lookup {
+    static LOOKUP: OnceLock<Lookup> = OnceLock::new();
+    LOOKUP.get_or_init(|| {
+        words()
+            .iter()
+            .enumerate()
+            .filter_map(|(i, w)| Some((pack(w.as_bytes())?, u16::try_from(i).ok()?)))
+            .collect()
+    })
+}
+
+/// Wordlist index of an ASCII-letter `word` (case-insensitive). BIP39 English
+/// words are 3–8 letters, so anything else is rejected before the lookup.
+fn index_of(word: &[u8]) -> Option<u16> {
+    lookup().get(&pack(word)?).copied()
 }
 
 /// Whether the bytes between two words only separate list entries: whitespace,

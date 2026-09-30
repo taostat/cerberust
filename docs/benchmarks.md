@@ -45,7 +45,7 @@ speed multiple against a neural net. What the deterministic approach delivers on
 | Scanner | cerberust throughput | cerberust P/R | llm-guard P/R (same corpus) |
 |---|---|---|---|
 | PII (structured) | 1.34M/s | 1.00 / 1.00 | 0.75 / 0.89 |
-| Secrets | ~440k/s | 1.00 / 1.00 | 1.00 / 0.45 |
+| Secrets | ~570k/s | 1.00 / 1.00 | 1.00 / 0.45 |
 
 Perfect precision and recall on entities with a recognizable shape — and, unlike an
 NER pipeline, **no over-redaction of ordinary words**. NER's strength is free-text

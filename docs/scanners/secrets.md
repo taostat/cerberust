@@ -115,14 +115,25 @@ Ships in the default build (no extra cargo feature).
 
 ## Performance
 
-On the benchmark corpus, the secret scanner runs at **~440k samples/sec** with
-**perfect precision and recall (1.00 / 1.00)**. That is about a third of the
-throughput before the gitleaks port (1.31M samples/sec; the ratio was measured on
-one machine, before and after), the cost of 200 more vendor rules and the
-seed-phrase check. On detection, `llm-guard`'s detect-secrets recalls only 0.45 on
-the same corpus — it doesn't recognize several of the OpenAI / Stripe / labelled
-`key=value` forms cerberust catches. See [benchmarks](../benchmarks.md) for the
-full table and methodology.
+On the benchmark corpus, the secret scanner runs at **~570k samples/sec** with
+**perfect precision and recall (1.00 / 1.00)**, a little under half the throughput
+before the gitleaks port (1.31M samples/sec). The ratio was measured on one
+machine, before and after, and applied to the published figure. On detection,
+`llm-guard`'s detect-secrets recalls only 0.45 on the same corpus — it doesn't
+recognize several of the OpenAI / Stripe / labelled `key=value` forms cerberust
+catches. See [benchmarks](../benchmarks.md) for the full table and methodology.
+
+Unary scan latency, release build, one machine (0.1.1 → this version):
+
+| Input | 0.1.1 | now |
+|---|---|---|
+| 2 KB of ordinary prompt text | 6 µs | 12 µs |
+| 51 KB negative corpus | 172 µs | 379 µs |
+| 51 KB with every rule keyword repeated throughout | 192 µs | 1.5 ms |
+
+A ported rule's regex runs only when one of its keywords occurs, and then only
+over windows around the keyword hits, widened by the rule's longest possible
+match. The last row is the worst case for that: every rule runs.
 
 The streaming hold-back DFA over all secret patterns is compiled once per pattern
 set and reused across streams, and keeps its state cache across pushes.

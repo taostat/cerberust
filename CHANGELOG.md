@@ -26,8 +26,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - The streaming hold-back DFA is compiled once per pattern set and reused across
   streams, and keeps its lazy state cache across pushes.
-- Secret-scanner throughput on the benchmark corpus is about a third of 0.1.1's
-  (~440k samples/s), the cost of the added rules.
+- Secret-scanner throughput on the benchmark corpus is a little under half of
+  0.1.1's (~570k samples/s), the cost of the added rules. Ported rules run only
+  in windows around their keyword hits.
 - A span matched by both an original vendor pattern and a ported rule keeps the
   original type name; spans only the new rules find use new type names (the
   gitleaks rule id upper-cased).

@@ -485,13 +485,16 @@ const SECRET_PATTERNS: [(&str, &str); 11] = [
     // hex, for the GM, Blockmachine and Taostats tenants. Hex after an
     // underscore prefix is neither hex-only nor high enough entropy for the
     // backstop, so these need an explicit rule.
-    ("GM_API_KEY", r"\bgm_live_[0-9a-f]{64}\b"),
-    ("BLOCKMACHINE_API_KEY", r"\bbm_live_[0-9a-f]{64}\b"),
+    ("GM_API_KEY", r"(?-u:\b)gm_live_[0-9a-f]{64}(?-u:\b)"),
+    (
+        "BLOCKMACHINE_API_KEY",
+        r"(?-u:\b)bm_live_[0-9a-f]{64}(?-u:\b)",
+    ),
     // Taostats API keys: `tao-<uuid>:<8-hex HMAC>` (management API) and the
     // user-management API's `ts_live_` keys.
     (
         "TAOSTATS_API_KEY",
-        r"\b(?:tao-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}:[0-9a-f]{8}|ts_live_[0-9a-f]{64})\b",
+        r"(?-u:\b)(?:tao-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}:[0-9a-f]{8}|ts_live_[0-9a-f]{64})(?-u:\b)",
     ),
     ("GITHUB_TOKEN", r"ghp_[A-Za-z0-9]{36}"),
     ("STRIPE_KEY", r"sk_live_[A-Za-z0-9]{24,}"),
