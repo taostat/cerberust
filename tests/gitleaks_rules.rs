@@ -61,6 +61,13 @@ const EXCLUDED: &[(&str, &str)] = &[
     ("pkcs12-file", "path-only rule (matches file names, has no content regex)"),
 ];
 
+/// Rules kept keyword-gated even though a keyword can sit outside the match,
+/// because the ungated regex is not specific enough to run on every text.
+/// `sourcegraph-access-token` includes a bare `[a-fA-F0-9]{40}` alternative
+/// that would match every git SHA. On a stream, a token whose keyword was
+/// flushed in an earlier chunk is missed.
+const ALWAYS_GATED: &[&str] = &["sourcegraph-access-token"];
+
 #[test]
 fn vendored_config_is_the_pinned_upstream_release() {
     let bytes = std::fs::read("data/gitleaks/gitleaks.toml").unwrap();
@@ -217,6 +224,54 @@ fn shorthand(e: char, in_class: bool) -> String {
     }
 }
 
+/// The regex as a pattern `proptest::string_regex` can sample: context
+/// anchors and the optional identifier prefix are dropped.
+fn sampling_form(regex: &str) -> String {
+    regex
+        .replace("(?-u:\\b)", "")
+        .replace("(?-u:\\B)", "")
+        .replace("[0-9A-Za-z_.-]{0,50}?", "")
+        .replace("(?:[\\x60'\"\\t\\n\\f\\r ;]|\\\\[nr]|$)", "(?:[ ;])")
+        .replace("(?:[\\x60'\"\\t\\n\\f\\r ;,]|\\\\[nr]|$)", "(?:[ ;])")
+        .replace("(?:[^0-9A-Za-z_-]|\\z)", "(?: )")
+        .replace("(?:[^a-zA-Z0-9+/]|\\z)", "(?: )")
+        .replace('$', "")
+        .replace("(?:^|", "(?:")
+        .replace('^', "")
+}
+
+/// Whether every match of `regex` contains one of `keywords` (sampled, fixed
+/// seed). If not, a keyword can sit outside the match (`airtable` before an
+/// Airtable token), and gating the regex on a keyword in the same text would
+/// make a streaming flush that holds the token but not the keyword miss it.
+fn keywords_always_in_match(regex: &str, keywords: &[String]) -> bool {
+    use proptest::strategy::{Strategy, ValueTree};
+    use proptest::test_runner::{Config, RngAlgorithm, TestRng, TestRunner};
+    // Sample case-sensitively: `(?i)` sampling mostly emits Unicode case
+    // variants (`ſ` for `s`, the Kelvin sign for `k`). Keywords are compared
+    // lower-cased, so the literal-case sample is enough.
+    let case_sensitive = sampling_form(regex)
+        .replace("(?i)", "")
+        .replace("(?i:", "(?:");
+    let Ok(strategy) = proptest::string::string_regex(&case_sensitive) else {
+        // Unsamplable patterns (lazy multi-line curl rules) name their keyword
+        // at the start of the match.
+        return true;
+    };
+    let mut runner = TestRunner::new_with_rng(
+        Config::default(),
+        TestRng::from_seed(RngAlgorithm::ChaCha, &[11; 32]),
+    );
+    (0..64).all(|_| {
+        let sample = strategy
+            .new_tree(&mut runner)
+            .unwrap()
+            .current()
+            .to_ascii_lowercase();
+        keywords.iter().any(|k| sample.contains(k.as_str()))
+    })
+}
+
 /// A Rust raw string literal for `s`, with only as many `#`s as needed.
 fn raw(s: &str) -> String {
     let mut hashes = 0;
@@ -314,6 +369,7 @@ fn render_rule(out: &mut String, rule: &toml::Value) -> Result<(), String> {
         .get("secretGroup")
         .and_then(toml::Value::as_integer)
         .unwrap_or(0);
+    let gated = ALWAYS_GATED.contains(&id) || keywords_always_in_match(&regex, &keywords);
     let mut lists = String::new();
     for list in rule
         .get("allowlists")
@@ -329,6 +385,7 @@ fn render_rule(out: &mut String, rule: &toml::Value) -> Result<(), String> {
     writeln!(out, "        regex: {},", raw(&regex)).unwrap();
     writeln!(out, "        secret_group: {group},").unwrap();
     render_list(out, "        keywords", &keywords);
+    writeln!(out, "        gated: {gated},").unwrap();
     writeln!(out, "        entropy: {entropy:?},").unwrap();
     if lists.is_empty() {
         writeln!(out, "        allowlists: &[],").unwrap();

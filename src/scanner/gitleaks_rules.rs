@@ -16,6 +16,7 @@ pub(crate) const RULES: &[Rule] = &[
         keywords: &[
             r"a3-",
         ],
+        gated: true,
         entropy: 3.8,
         allowlists: &[],
     },
@@ -27,6 +28,7 @@ pub(crate) const RULES: &[Rule] = &[
         keywords: &[
             r"ops_",
         ],
+        gated: true,
         entropy: 0.0,
         allowlists: &[],
     },
@@ -38,6 +40,7 @@ pub(crate) const RULES: &[Rule] = &[
         keywords: &[
             r"adafruit",
         ],
+        gated: true,
         entropy: 0.0,
         allowlists: &[],
     },
@@ -49,6 +52,7 @@ pub(crate) const RULES: &[Rule] = &[
         keywords: &[
             r"p8e-",
         ],
+        gated: true,
         entropy: 0.0,
         allowlists: &[],
     },
@@ -60,6 +64,7 @@ pub(crate) const RULES: &[Rule] = &[
         keywords: &[
             r"age-secret-key-1",
         ],
+        gated: true,
         entropy: 0.0,
         allowlists: &[],
     },
@@ -71,6 +76,7 @@ pub(crate) const RULES: &[Rule] = &[
         keywords: &[
             r"airtable",
         ],
+        gated: true,
         entropy: 0.0,
         allowlists: &[],
     },
@@ -82,6 +88,7 @@ pub(crate) const RULES: &[Rule] = &[
         keywords: &[
             r"airtable",
         ],
+        gated: false,
         entropy: 0.0,
         allowlists: &[],
     },
@@ -93,6 +100,7 @@ pub(crate) const RULES: &[Rule] = &[
         keywords: &[
             r"algolia",
         ],
+        gated: true,
         entropy: 0.0,
         allowlists: &[],
     },
@@ -104,6 +112,7 @@ pub(crate) const RULES: &[Rule] = &[
         keywords: &[
             r"ltai",
         ],
+        gated: true,
         entropy: 0.0,
         allowlists: &[],
     },
@@ -115,6 +124,7 @@ pub(crate) const RULES: &[Rule] = &[
         keywords: &[
             r"alibaba",
         ],
+        gated: true,
         entropy: 0.0,
         allowlists: &[],
     },
@@ -126,6 +136,7 @@ pub(crate) const RULES: &[Rule] = &[
         keywords: &[
             r"sk-ant-admin01",
         ],
+        gated: true,
         entropy: 0.0,
         allowlists: &[],
     },
@@ -137,6 +148,7 @@ pub(crate) const RULES: &[Rule] = &[
         keywords: &[
             r"sk-ant-api03",
         ],
+        gated: true,
         entropy: 0.0,
         allowlists: &[],
     },
@@ -148,6 +160,7 @@ pub(crate) const RULES: &[Rule] = &[
         keywords: &[
             r"akcp",
         ],
+        gated: true,
         entropy: 4.5,
         allowlists: &[],
     },
@@ -159,6 +172,7 @@ pub(crate) const RULES: &[Rule] = &[
         keywords: &[
             r"cmvmd",
         ],
+        gated: true,
         entropy: 4.5,
         allowlists: &[],
     },
@@ -170,6 +184,7 @@ pub(crate) const RULES: &[Rule] = &[
         keywords: &[
             r"asana",
         ],
+        gated: true,
         entropy: 0.0,
         allowlists: &[],
     },
@@ -184,6 +199,7 @@ pub(crate) const RULES: &[Rule] = &[
             r"jira",
             r"atatt3",
         ],
+        gated: true,
         entropy: 3.5,
         allowlists: &[],
     },
@@ -198,6 +214,7 @@ pub(crate) const RULES: &[Rule] = &[
             r"scauth_",
             r"authress_",
         ],
+        gated: true,
         entropy: 0.0,
         allowlists: &[],
     },
@@ -213,6 +230,7 @@ pub(crate) const RULES: &[Rule] = &[
             r"abia",
             r"acca",
         ],
+        gated: true,
         entropy: 0.0,
         allowlists: &[
             Allowlist {
@@ -233,6 +251,7 @@ pub(crate) const RULES: &[Rule] = &[
         keywords: &[
             r"absk",
         ],
+        gated: true,
         entropy: 0.0,
         allowlists: &[],
     },
@@ -244,6 +263,7 @@ pub(crate) const RULES: &[Rule] = &[
         keywords: &[
             r"bedrock-api-key-",
         ],
+        gated: true,
         entropy: 0.0,
         allowlists: &[],
     },
@@ -255,6 +275,7 @@ pub(crate) const RULES: &[Rule] = &[
         keywords: &[
             r"q~",
         ],
+        gated: true,
         entropy: 0.0,
         allowlists: &[],
     },
@@ -266,6 +287,7 @@ pub(crate) const RULES: &[Rule] = &[
         keywords: &[
             r"beamer",
         ],
+        gated: true,
         entropy: 0.0,
         allowlists: &[],
     },
@@ -277,6 +299,7 @@ pub(crate) const RULES: &[Rule] = &[
         keywords: &[
             r"bitbucket",
         ],
+        gated: true,
         entropy: 0.0,
         allowlists: &[],
     },
@@ -288,6 +311,7 @@ pub(crate) const RULES: &[Rule] = &[
         keywords: &[
             r"bittrex",
         ],
+        gated: true,
         entropy: 0.0,
         allowlists: &[],
     },
@@ -299,6 +323,7 @@ pub(crate) const RULES: &[Rule] = &[
         keywords: &[
             r"bittrex",
         ],
+        gated: true,
         entropy: 0.0,
         allowlists: &[],
     },
@@ -310,6 +335,7 @@ pub(crate) const RULES: &[Rule] = &[
         keywords: &[
             r"meraki",
         ],
+        gated: true,
         entropy: 0.0,
         allowlists: &[],
     },
@@ -321,6 +347,7 @@ pub(crate) const RULES: &[Rule] = &[
         keywords: &[
             r"4b1d",
         ],
+        gated: true,
         entropy: 0.0,
         allowlists: &[],
     },
@@ -332,6 +359,7 @@ pub(crate) const RULES: &[Rule] = &[
         keywords: &[
             r"clojars_",
         ],
+        gated: true,
         entropy: 0.0,
         allowlists: &[],
     },
@@ -343,6 +371,7 @@ pub(crate) const RULES: &[Rule] = &[
         keywords: &[
             r"cloudflare",
         ],
+        gated: true,
         entropy: 0.0,
         allowlists: &[],
     },
@@ -354,6 +383,7 @@ pub(crate) const RULES: &[Rule] = &[
         keywords: &[
             r"cloudflare",
         ],
+        gated: true,
         entropy: 0.0,
         allowlists: &[],
     },
@@ -366,6 +396,7 @@ pub(crate) const RULES: &[Rule] = &[
             r"cloudflare",
             r"v1.0-",
         ],
+        gated: true,
         entropy: 0.0,
         allowlists: &[],
     },
@@ -377,6 +408,7 @@ pub(crate) const RULES: &[Rule] = &[
         keywords: &[
             r"codecov",
         ],
+        gated: true,
         entropy: 0.0,
         allowlists: &[],
     },
@@ -389,6 +421,7 @@ pub(crate) const RULES: &[Rule] = &[
             r"cohere",
             r"co_api_key",
         ],
+        gated: true,
         entropy: 0.0,
         allowlists: &[],
     },
@@ -400,6 +433,7 @@ pub(crate) const RULES: &[Rule] = &[
         keywords: &[
             r"coinbase",
         ],
+        gated: true,
         entropy: 0.0,
         allowlists: &[],
     },
@@ -411,6 +445,7 @@ pub(crate) const RULES: &[Rule] = &[
         keywords: &[
             r"confluent",
         ],
+        gated: true,
         entropy: 0.0,
         allowlists: &[],
     },
@@ -422,6 +457,7 @@ pub(crate) const RULES: &[Rule] = &[
         keywords: &[
             r"confluent",
         ],
+        gated: true,
         entropy: 0.0,
         allowlists: &[],
     },
@@ -433,6 +469,7 @@ pub(crate) const RULES: &[Rule] = &[
         keywords: &[
             r"contentful",
         ],
+        gated: true,
         entropy: 0.0,
         allowlists: &[],
     },
@@ -444,6 +481,7 @@ pub(crate) const RULES: &[Rule] = &[
         keywords: &[
             r"curl",
         ],
+        gated: true,
         entropy: 2.75,
         allowlists: &[],
     },
@@ -455,6 +493,7 @@ pub(crate) const RULES: &[Rule] = &[
         keywords: &[
             r"curl",
         ],
+        gated: true,
         entropy: 0.0,
         allowlists: &[
             Allowlist {
@@ -480,6 +519,7 @@ pub(crate) const RULES: &[Rule] = &[
         keywords: &[
             r"dapi",
         ],
+        gated: true,
         entropy: 0.0,
         allowlists: &[],
     },
@@ -491,6 +531,7 @@ pub(crate) const RULES: &[Rule] = &[
         keywords: &[
             r"datadog",
         ],
+        gated: true,
         entropy: 0.0,
         allowlists: &[],
     },
@@ -502,6 +543,7 @@ pub(crate) const RULES: &[Rule] = &[
         keywords: &[
             r"dnkey",
         ],
+        gated: true,
         entropy: 0.0,
         allowlists: &[],
     },
@@ -513,6 +555,7 @@ pub(crate) const RULES: &[Rule] = &[
         keywords: &[
             r"doo_v1_",
         ],
+        gated: true,
         entropy: 0.0,
         allowlists: &[],
     },
@@ -524,6 +567,7 @@ pub(crate) const RULES: &[Rule] = &[
         keywords: &[
             r"dop_v1_",
         ],
+        gated: true,
         entropy: 0.0,
         allowlists: &[],
     },
@@ -535,6 +579,7 @@ pub(crate) const RULES: &[Rule] = &[
         keywords: &[
             r"dor_v1_",
         ],
+        gated: true,
         entropy: 0.0,
         allowlists: &[],
     },
@@ -546,6 +591,7 @@ pub(crate) const RULES: &[Rule] = &[
         keywords: &[
             r"discord",
         ],
+        gated: true,
         entropy: 0.0,
         allowlists: &[],
     },
@@ -557,6 +603,7 @@ pub(crate) const RULES: &[Rule] = &[
         keywords: &[
             r"discord",
         ],
+        gated: true,
         entropy: 0.0,
         allowlists: &[],
     },
@@ -568,6 +615,7 @@ pub(crate) const RULES: &[Rule] = &[
         keywords: &[
             r"dp.pt.",
         ],
+        gated: true,
         entropy: 0.0,
         allowlists: &[],
     },
@@ -579,6 +627,7 @@ pub(crate) const RULES: &[Rule] = &[
         keywords: &[
             r"droneci",
         ],
+        gated: true,
         entropy: 0.0,
         allowlists: &[],
     },
@@ -590,6 +639,7 @@ pub(crate) const RULES: &[Rule] = &[
         keywords: &[
             r"dropbox",
         ],
+        gated: true,
         entropy: 0.0,
         allowlists: &[],
     },
@@ -601,6 +651,7 @@ pub(crate) const RULES: &[Rule] = &[
         keywords: &[
             r"dropbox",
         ],
+        gated: true,
         entropy: 0.0,
         allowlists: &[],
     },
@@ -612,6 +663,7 @@ pub(crate) const RULES: &[Rule] = &[
         keywords: &[
             r"dropbox",
         ],
+        gated: true,
         entropy: 0.0,
         allowlists: &[],
     },
@@ -623,6 +675,7 @@ pub(crate) const RULES: &[Rule] = &[
         keywords: &[
             r"duffel_",
         ],
+        gated: true,
         entropy: 0.0,
         allowlists: &[],
     },
@@ -634,6 +687,7 @@ pub(crate) const RULES: &[Rule] = &[
         keywords: &[
             r"dt0c01.",
         ],
+        gated: true,
         entropy: 0.0,
         allowlists: &[],
     },
@@ -645,6 +699,7 @@ pub(crate) const RULES: &[Rule] = &[
         keywords: &[
             r"ezak",
         ],
+        gated: true,
         entropy: 0.0,
         allowlists: &[],
     },
@@ -656,6 +711,7 @@ pub(crate) const RULES: &[Rule] = &[
         keywords: &[
             r"eztk",
         ],
+        gated: true,
         entropy: 0.0,
         allowlists: &[],
     },
@@ -667,6 +723,7 @@ pub(crate) const RULES: &[Rule] = &[
         keywords: &[
             r"etsy",
         ],
+        gated: true,
         entropy: 0.0,
         allowlists: &[],
     },
@@ -678,6 +735,7 @@ pub(crate) const RULES: &[Rule] = &[
         keywords: &[
             r"facebook",
         ],
+        gated: false,
         entropy: 0.0,
         allowlists: &[],
     },
@@ -690,6 +748,7 @@ pub(crate) const RULES: &[Rule] = &[
             r"eaam",
             r"eaac",
         ],
+        gated: true,
         entropy: 0.0,
         allowlists: &[],
     },
@@ -701,6 +760,7 @@ pub(crate) const RULES: &[Rule] = &[
         keywords: &[
             r"facebook",
         ],
+        gated: true,
         entropy: 0.0,
         allowlists: &[],
     },
@@ -712,6 +772,7 @@ pub(crate) const RULES: &[Rule] = &[
         keywords: &[
             r"fastly",
         ],
+        gated: true,
         entropy: 0.0,
         allowlists: &[],
     },
@@ -723,6 +784,7 @@ pub(crate) const RULES: &[Rule] = &[
         keywords: &[
             r"finicity",
         ],
+        gated: true,
         entropy: 0.0,
         allowlists: &[],
     },
@@ -734,6 +796,7 @@ pub(crate) const RULES: &[Rule] = &[
         keywords: &[
             r"finicity",
         ],
+        gated: true,
         entropy: 0.0,
         allowlists: &[],
     },
@@ -745,6 +808,7 @@ pub(crate) const RULES: &[Rule] = &[
         keywords: &[
             r"finnhub",
         ],
+        gated: true,
         entropy: 0.0,
         allowlists: &[],
     },
@@ -756,6 +820,7 @@ pub(crate) const RULES: &[Rule] = &[
         keywords: &[
             r"flickr",
         ],
+        gated: true,
         entropy: 0.0,
         allowlists: &[],
     },
@@ -767,6 +832,7 @@ pub(crate) const RULES: &[Rule] = &[
         keywords: &[
             r"flwseck_test",
         ],
+        gated: true,
         entropy: 0.0,
         allowlists: &[],
     },
@@ -778,6 +844,7 @@ pub(crate) const RULES: &[Rule] = &[
         keywords: &[
             r"flwseck_test",
         ],
+        gated: true,
         entropy: 0.0,
         allowlists: &[],
     },
@@ -791,6 +858,7 @@ pub(crate) const RULES: &[Rule] = &[
             r"fm1",
             r"fm2_",
         ],
+        gated: true,
         entropy: 0.0,
         allowlists: &[],
     },
@@ -802,6 +870,7 @@ pub(crate) const RULES: &[Rule] = &[
         keywords: &[
             r"fio-u-",
         ],
+        gated: true,
         entropy: 0.0,
         allowlists: &[],
     },
@@ -813,6 +882,7 @@ pub(crate) const RULES: &[Rule] = &[
         keywords: &[
             r"freshbooks",
         ],
+        gated: true,
         entropy: 0.0,
         allowlists: &[],
     },
@@ -824,6 +894,7 @@ pub(crate) const RULES: &[Rule] = &[
         keywords: &[
             r"aiza",
         ],
+        gated: true,
         entropy: 0.0,
         allowlists: &[
             Allowlist {
@@ -860,6 +931,7 @@ pub(crate) const RULES: &[Rule] = &[
             r"ghu_",
             r"ghs_",
         ],
+        gated: true,
         entropy: 0.0,
         allowlists: &[
             Allowlist {
@@ -878,6 +950,7 @@ pub(crate) const RULES: &[Rule] = &[
         keywords: &[
             r"github_pat_",
         ],
+        gated: true,
         entropy: 0.0,
         allowlists: &[],
     },
@@ -889,6 +962,7 @@ pub(crate) const RULES: &[Rule] = &[
         keywords: &[
             r"gho_",
         ],
+        gated: true,
         entropy: 0.0,
         allowlists: &[],
     },
@@ -900,6 +974,7 @@ pub(crate) const RULES: &[Rule] = &[
         keywords: &[
             r"ghp_",
         ],
+        gated: true,
         entropy: 0.0,
         allowlists: &[
             Allowlist {
@@ -918,6 +993,7 @@ pub(crate) const RULES: &[Rule] = &[
         keywords: &[
             r"ghr_",
         ],
+        gated: true,
         entropy: 0.0,
         allowlists: &[],
     },
@@ -929,6 +1005,7 @@ pub(crate) const RULES: &[Rule] = &[
         keywords: &[
             r"glcbt-",
         ],
+        gated: true,
         entropy: 0.0,
         allowlists: &[],
     },
@@ -940,6 +1017,7 @@ pub(crate) const RULES: &[Rule] = &[
         keywords: &[
             r"gldt-",
         ],
+        gated: true,
         entropy: 0.0,
         allowlists: &[],
     },
@@ -951,6 +1029,7 @@ pub(crate) const RULES: &[Rule] = &[
         keywords: &[
             r"glft-",
         ],
+        gated: true,
         entropy: 0.0,
         allowlists: &[],
     },
@@ -962,6 +1041,7 @@ pub(crate) const RULES: &[Rule] = &[
         keywords: &[
             r"glimt-",
         ],
+        gated: true,
         entropy: 0.0,
         allowlists: &[],
     },
@@ -973,6 +1053,7 @@ pub(crate) const RULES: &[Rule] = &[
         keywords: &[
             r"glagent-",
         ],
+        gated: true,
         entropy: 0.0,
         allowlists: &[],
     },
@@ -984,6 +1065,7 @@ pub(crate) const RULES: &[Rule] = &[
         keywords: &[
             r"gloas-",
         ],
+        gated: true,
         entropy: 0.0,
         allowlists: &[],
     },
@@ -995,6 +1077,7 @@ pub(crate) const RULES: &[Rule] = &[
         keywords: &[
             r"glpat-",
         ],
+        gated: true,
         entropy: 0.0,
         allowlists: &[],
     },
@@ -1006,6 +1089,7 @@ pub(crate) const RULES: &[Rule] = &[
         keywords: &[
             r"glpat-",
         ],
+        gated: true,
         entropy: 0.0,
         allowlists: &[],
     },
@@ -1017,6 +1101,7 @@ pub(crate) const RULES: &[Rule] = &[
         keywords: &[
             r"glptt-",
         ],
+        gated: true,
         entropy: 0.0,
         allowlists: &[],
     },
@@ -1028,6 +1113,7 @@ pub(crate) const RULES: &[Rule] = &[
         keywords: &[
             r"gr1348941",
         ],
+        gated: true,
         entropy: 0.0,
         allowlists: &[],
     },
@@ -1039,6 +1125,7 @@ pub(crate) const RULES: &[Rule] = &[
         keywords: &[
             r"glrt-",
         ],
+        gated: true,
         entropy: 0.0,
         allowlists: &[],
     },
@@ -1050,6 +1137,7 @@ pub(crate) const RULES: &[Rule] = &[
         keywords: &[
             r"glrt-",
         ],
+        gated: true,
         entropy: 0.0,
         allowlists: &[],
     },
@@ -1061,6 +1149,7 @@ pub(crate) const RULES: &[Rule] = &[
         keywords: &[
             r"glsoat-",
         ],
+        gated: true,
         entropy: 0.0,
         allowlists: &[],
     },
@@ -1072,6 +1161,7 @@ pub(crate) const RULES: &[Rule] = &[
         keywords: &[
             r"_gitlab_session=",
         ],
+        gated: true,
         entropy: 0.0,
         allowlists: &[],
     },
@@ -1083,6 +1173,7 @@ pub(crate) const RULES: &[Rule] = &[
         keywords: &[
             r"gitter",
         ],
+        gated: true,
         entropy: 0.0,
         allowlists: &[],
     },
@@ -1095,6 +1186,7 @@ pub(crate) const RULES: &[Rule] = &[
             r"live_",
             r"gocardless",
         ],
+        gated: true,
         entropy: 0.0,
         allowlists: &[],
     },
@@ -1106,6 +1198,7 @@ pub(crate) const RULES: &[Rule] = &[
         keywords: &[
             r"eyjrijoi",
         ],
+        gated: true,
         entropy: 0.0,
         allowlists: &[],
     },
@@ -1117,6 +1210,7 @@ pub(crate) const RULES: &[Rule] = &[
         keywords: &[
             r"glc_",
         ],
+        gated: true,
         entropy: 0.0,
         allowlists: &[],
     },
@@ -1128,6 +1222,7 @@ pub(crate) const RULES: &[Rule] = &[
         keywords: &[
             r"glsa_",
         ],
+        gated: true,
         entropy: 0.0,
         allowlists: &[],
     },
@@ -1140,6 +1235,7 @@ pub(crate) const RULES: &[Rule] = &[
             r"pat.",
             r"sat.",
         ],
+        gated: true,
         entropy: 0.0,
         allowlists: &[],
     },
@@ -1151,6 +1247,7 @@ pub(crate) const RULES: &[Rule] = &[
         keywords: &[
             r"atlasv1",
         ],
+        gated: true,
         entropy: 3.5,
         allowlists: &[],
     },
@@ -1162,6 +1259,7 @@ pub(crate) const RULES: &[Rule] = &[
         keywords: &[
             r"heroku",
         ],
+        gated: true,
         entropy: 0.0,
         allowlists: &[],
     },
@@ -1173,6 +1271,7 @@ pub(crate) const RULES: &[Rule] = &[
         keywords: &[
             r"hrku-aa",
         ],
+        gated: true,
         entropy: 0.0,
         allowlists: &[],
     },
@@ -1184,6 +1283,7 @@ pub(crate) const RULES: &[Rule] = &[
         keywords: &[
             r"hubspot",
         ],
+        gated: true,
         entropy: 0.0,
         allowlists: &[],
     },
@@ -1195,6 +1295,7 @@ pub(crate) const RULES: &[Rule] = &[
         keywords: &[
             r"hf_",
         ],
+        gated: true,
         entropy: 0.0,
         allowlists: &[],
     },
@@ -1206,6 +1307,7 @@ pub(crate) const RULES: &[Rule] = &[
         keywords: &[
             r"api_org_",
         ],
+        gated: true,
         entropy: 0.0,
         allowlists: &[],
     },
@@ -1217,6 +1319,7 @@ pub(crate) const RULES: &[Rule] = &[
         keywords: &[
             r"ico-",
         ],
+        gated: true,
         entropy: 0.0,
         allowlists: &[],
     },
@@ -1228,6 +1331,7 @@ pub(crate) const RULES: &[Rule] = &[
         keywords: &[
             r"intercom",
         ],
+        gated: true,
         entropy: 0.0,
         allowlists: &[],
     },
@@ -1241,6 +1345,7 @@ pub(crate) const RULES: &[Rule] = &[
             r"s-s4t2ud-",
             r"s-s4t2af-",
         ],
+        gated: true,
         entropy: 0.0,
         allowlists: &[],
     },
@@ -1255,6 +1360,7 @@ pub(crate) const RULES: &[Rule] = &[
             r"bintray",
             r"xray",
         ],
+        gated: true,
         entropy: 0.0,
         allowlists: &[],
     },
@@ -1269,6 +1375,7 @@ pub(crate) const RULES: &[Rule] = &[
             r"bintray",
             r"xray",
         ],
+        gated: true,
         entropy: 0.0,
         allowlists: &[],
     },
@@ -1280,6 +1387,7 @@ pub(crate) const RULES: &[Rule] = &[
         keywords: &[
             r"ey",
         ],
+        gated: true,
         entropy: 0.0,
         allowlists: &[],
     },
@@ -1291,6 +1399,7 @@ pub(crate) const RULES: &[Rule] = &[
         keywords: &[
             r"zxlk",
         ],
+        gated: true,
         entropy: 0.0,
         allowlists: &[],
     },
@@ -1302,6 +1411,7 @@ pub(crate) const RULES: &[Rule] = &[
         keywords: &[
             r"kraken",
         ],
+        gated: true,
         entropy: 0.0,
         allowlists: &[],
     },
@@ -1313,6 +1423,7 @@ pub(crate) const RULES: &[Rule] = &[
         keywords: &[
             r"kucoin",
         ],
+        gated: true,
         entropy: 0.0,
         allowlists: &[],
     },
@@ -1324,6 +1435,7 @@ pub(crate) const RULES: &[Rule] = &[
         keywords: &[
             r"kucoin",
         ],
+        gated: true,
         entropy: 0.0,
         allowlists: &[],
     },
@@ -1335,6 +1447,7 @@ pub(crate) const RULES: &[Rule] = &[
         keywords: &[
             r"launchdarkly",
         ],
+        gated: true,
         entropy: 0.0,
         allowlists: &[],
     },
@@ -1346,6 +1459,7 @@ pub(crate) const RULES: &[Rule] = &[
         keywords: &[
             r"lin_api_",
         ],
+        gated: true,
         entropy: 0.0,
         allowlists: &[],
     },
@@ -1357,6 +1471,7 @@ pub(crate) const RULES: &[Rule] = &[
         keywords: &[
             r"linear",
         ],
+        gated: true,
         entropy: 0.0,
         allowlists: &[],
     },
@@ -1370,6 +1485,7 @@ pub(crate) const RULES: &[Rule] = &[
             r"linked_in",
             r"linked-in",
         ],
+        gated: true,
         entropy: 0.0,
         allowlists: &[],
     },
@@ -1382,6 +1498,7 @@ pub(crate) const RULES: &[Rule] = &[
             r"test_",
             r"live_",
         ],
+        gated: true,
         entropy: 0.0,
         allowlists: &[],
     },
@@ -1393,6 +1510,7 @@ pub(crate) const RULES: &[Rule] = &[
         keywords: &[
             r"looker",
         ],
+        gated: true,
         entropy: 0.0,
         allowlists: &[],
     },
@@ -1404,6 +1522,7 @@ pub(crate) const RULES: &[Rule] = &[
         keywords: &[
             r"mailchimp",
         ],
+        gated: true,
         entropy: 0.0,
         allowlists: &[],
     },
@@ -1415,6 +1534,7 @@ pub(crate) const RULES: &[Rule] = &[
         keywords: &[
             r"mailgun",
         ],
+        gated: true,
         entropy: 0.0,
         allowlists: &[],
     },
@@ -1426,6 +1546,7 @@ pub(crate) const RULES: &[Rule] = &[
         keywords: &[
             r"mailgun",
         ],
+        gated: true,
         entropy: 0.0,
         allowlists: &[],
     },
@@ -1437,6 +1558,7 @@ pub(crate) const RULES: &[Rule] = &[
         keywords: &[
             r"mapbox",
         ],
+        gated: true,
         entropy: 0.0,
         allowlists: &[],
     },
@@ -1448,6 +1570,7 @@ pub(crate) const RULES: &[Rule] = &[
         keywords: &[
             r"mattermost",
         ],
+        gated: true,
         entropy: 0.0,
         allowlists: &[],
     },
@@ -1459,6 +1582,7 @@ pub(crate) const RULES: &[Rule] = &[
         keywords: &[
             r"_mmk",
         ],
+        gated: true,
         entropy: 0.0,
         allowlists: &[],
     },
@@ -1472,6 +1596,7 @@ pub(crate) const RULES: &[Rule] = &[
             r"message-bird",
             r"message_bird",
         ],
+        gated: true,
         entropy: 0.0,
         allowlists: &[],
     },
@@ -1485,6 +1610,7 @@ pub(crate) const RULES: &[Rule] = &[
             r"webhookb2",
             r"incomingwebhook",
         ],
+        gated: true,
         entropy: 0.0,
         allowlists: &[],
     },
@@ -1496,6 +1622,7 @@ pub(crate) const RULES: &[Rule] = &[
         keywords: &[
             r"netlify",
         ],
+        gated: true,
         entropy: 0.0,
         allowlists: &[],
     },
@@ -1507,6 +1634,7 @@ pub(crate) const RULES: &[Rule] = &[
         keywords: &[
             r"nrii-",
         ],
+        gated: true,
         entropy: 0.0,
         allowlists: &[],
     },
@@ -1518,6 +1646,7 @@ pub(crate) const RULES: &[Rule] = &[
         keywords: &[
             r"nrak",
         ],
+        gated: true,
         entropy: 0.0,
         allowlists: &[],
     },
@@ -1529,6 +1658,7 @@ pub(crate) const RULES: &[Rule] = &[
         keywords: &[
             r"ntn_",
         ],
+        gated: true,
         entropy: 0.0,
         allowlists: &[],
     },
@@ -1540,6 +1670,7 @@ pub(crate) const RULES: &[Rule] = &[
         keywords: &[
             r"npm_",
         ],
+        gated: true,
         entropy: 0.0,
         allowlists: &[],
     },
@@ -1553,6 +1684,7 @@ pub(crate) const RULES: &[Rule] = &[
             r"new-york-times",
             r"newyorktimes",
         ],
+        gated: true,
         entropy: 0.0,
         allowlists: &[],
     },
@@ -1564,6 +1696,7 @@ pub(crate) const RULES: &[Rule] = &[
         keywords: &[
             r"api-",
         ],
+        gated: true,
         entropy: 0.0,
         allowlists: &[],
     },
@@ -1575,6 +1708,7 @@ pub(crate) const RULES: &[Rule] = &[
         keywords: &[
             r"okta",
         ],
+        gated: true,
         entropy: 0.0,
         allowlists: &[],
     },
@@ -1586,6 +1720,7 @@ pub(crate) const RULES: &[Rule] = &[
         keywords: &[
             r"t3blbkfj",
         ],
+        gated: true,
         entropy: 0.0,
         allowlists: &[],
     },
@@ -1597,6 +1732,7 @@ pub(crate) const RULES: &[Rule] = &[
         keywords: &[
             r"sha256~",
         ],
+        gated: true,
         entropy: 3.5,
         allowlists: &[],
     },
@@ -1608,6 +1744,7 @@ pub(crate) const RULES: &[Rule] = &[
         keywords: &[
             r"pplx-",
         ],
+        gated: true,
         entropy: 0.0,
         allowlists: &[],
     },
@@ -1619,6 +1756,7 @@ pub(crate) const RULES: &[Rule] = &[
         keywords: &[
             r"plaid",
         ],
+        gated: true,
         entropy: 0.0,
         allowlists: &[],
     },
@@ -1630,6 +1768,7 @@ pub(crate) const RULES: &[Rule] = &[
         keywords: &[
             r"plaid",
         ],
+        gated: true,
         entropy: 3.5,
         allowlists: &[],
     },
@@ -1641,6 +1780,7 @@ pub(crate) const RULES: &[Rule] = &[
         keywords: &[
             r"pscale_tkn_",
         ],
+        gated: true,
         entropy: 0.0,
         allowlists: &[],
     },
@@ -1652,6 +1792,7 @@ pub(crate) const RULES: &[Rule] = &[
         keywords: &[
             r"pscale_oauth_",
         ],
+        gated: true,
         entropy: 0.0,
         allowlists: &[],
     },
@@ -1663,6 +1804,7 @@ pub(crate) const RULES: &[Rule] = &[
         keywords: &[
             r"pscale_pw_",
         ],
+        gated: true,
         entropy: 0.0,
         allowlists: &[],
     },
@@ -1674,6 +1816,7 @@ pub(crate) const RULES: &[Rule] = &[
         keywords: &[
             r"pmak-",
         ],
+        gated: true,
         entropy: 0.0,
         allowlists: &[],
     },
@@ -1685,6 +1828,7 @@ pub(crate) const RULES: &[Rule] = &[
         keywords: &[
             r"pnu_",
         ],
+        gated: true,
         entropy: 0.0,
         allowlists: &[],
     },
@@ -1696,6 +1840,7 @@ pub(crate) const RULES: &[Rule] = &[
         keywords: &[
             r"-----begin",
         ],
+        gated: true,
         entropy: 0.0,
         allowlists: &[],
     },
@@ -1709,6 +1854,7 @@ pub(crate) const RULES: &[Rule] = &[
             r"private_ai",
             r"private-ai",
         ],
+        gated: true,
         entropy: 0.0,
         allowlists: &[],
     },
@@ -1720,6 +1866,7 @@ pub(crate) const RULES: &[Rule] = &[
         keywords: &[
             r"pul-",
         ],
+        gated: true,
         entropy: 0.0,
         allowlists: &[],
     },
@@ -1731,6 +1878,7 @@ pub(crate) const RULES: &[Rule] = &[
         keywords: &[
             r"pypi-ageichlwas5vcmc",
         ],
+        gated: true,
         entropy: 0.0,
         allowlists: &[],
     },
@@ -1742,6 +1890,7 @@ pub(crate) const RULES: &[Rule] = &[
         keywords: &[
             r"rapidapi",
         ],
+        gated: true,
         entropy: 0.0,
         allowlists: &[],
     },
@@ -1753,6 +1902,7 @@ pub(crate) const RULES: &[Rule] = &[
         keywords: &[
             r"rdme_",
         ],
+        gated: true,
         entropy: 0.0,
         allowlists: &[],
     },
@@ -1764,6 +1914,7 @@ pub(crate) const RULES: &[Rule] = &[
         keywords: &[
             r"rubygems_",
         ],
+        gated: true,
         entropy: 0.0,
         allowlists: &[],
     },
@@ -1775,6 +1926,7 @@ pub(crate) const RULES: &[Rule] = &[
         keywords: &[
             r"tk-us-",
         ],
+        gated: true,
         entropy: 0.0,
         allowlists: &[],
     },
@@ -1786,6 +1938,7 @@ pub(crate) const RULES: &[Rule] = &[
         keywords: &[
             r"sendbird",
         ],
+        gated: true,
         entropy: 0.0,
         allowlists: &[],
     },
@@ -1797,6 +1950,7 @@ pub(crate) const RULES: &[Rule] = &[
         keywords: &[
             r"sg.",
         ],
+        gated: true,
         entropy: 0.0,
         allowlists: &[],
     },
@@ -1808,6 +1962,7 @@ pub(crate) const RULES: &[Rule] = &[
         keywords: &[
             r"xkeysib-",
         ],
+        gated: true,
         entropy: 0.0,
         allowlists: &[],
     },
@@ -1819,6 +1974,7 @@ pub(crate) const RULES: &[Rule] = &[
         keywords: &[
             r"sentry",
         ],
+        gated: true,
         entropy: 0.0,
         allowlists: &[],
     },
@@ -1830,6 +1986,7 @@ pub(crate) const RULES: &[Rule] = &[
         keywords: &[
             r"sntrys_eyjpyxqio",
         ],
+        gated: true,
         entropy: 4.5,
         allowlists: &[],
     },
@@ -1841,6 +1998,7 @@ pub(crate) const RULES: &[Rule] = &[
         keywords: &[
             r"sntryu_",
         ],
+        gated: true,
         entropy: 3.5,
         allowlists: &[],
     },
@@ -1852,6 +2010,7 @@ pub(crate) const RULES: &[Rule] = &[
         keywords: &[
             r"sm_aat",
         ],
+        gated: true,
         entropy: 0.0,
         allowlists: &[],
     },
@@ -1863,6 +2022,7 @@ pub(crate) const RULES: &[Rule] = &[
         keywords: &[
             r"sm_pat",
         ],
+        gated: true,
         entropy: 0.0,
         allowlists: &[],
     },
@@ -1874,6 +2034,7 @@ pub(crate) const RULES: &[Rule] = &[
         keywords: &[
             r"sm_sat",
         ],
+        gated: true,
         entropy: 0.0,
         allowlists: &[],
     },
@@ -1885,6 +2046,7 @@ pub(crate) const RULES: &[Rule] = &[
         keywords: &[
             r"shippo_",
         ],
+        gated: true,
         entropy: 0.0,
         allowlists: &[],
     },
@@ -1896,6 +2058,7 @@ pub(crate) const RULES: &[Rule] = &[
         keywords: &[
             r"shpat_",
         ],
+        gated: true,
         entropy: 0.0,
         allowlists: &[],
     },
@@ -1907,6 +2070,7 @@ pub(crate) const RULES: &[Rule] = &[
         keywords: &[
             r"shpca_",
         ],
+        gated: true,
         entropy: 0.0,
         allowlists: &[],
     },
@@ -1918,6 +2082,7 @@ pub(crate) const RULES: &[Rule] = &[
         keywords: &[
             r"shppa_",
         ],
+        gated: true,
         entropy: 0.0,
         allowlists: &[],
     },
@@ -1929,6 +2094,7 @@ pub(crate) const RULES: &[Rule] = &[
         keywords: &[
             r"shpss_",
         ],
+        gated: true,
         entropy: 0.0,
         allowlists: &[],
     },
@@ -1941,6 +2107,7 @@ pub(crate) const RULES: &[Rule] = &[
             r"bundle_enterprise__contribsys__com",
             r"bundle_gems__contribsys__com",
         ],
+        gated: true,
         entropy: 0.0,
         allowlists: &[],
     },
@@ -1953,6 +2120,7 @@ pub(crate) const RULES: &[Rule] = &[
             r"gems.contribsys.com",
             r"enterprise.contribsys.com",
         ],
+        gated: false,
         entropy: 0.0,
         allowlists: &[],
     },
@@ -1964,6 +2132,7 @@ pub(crate) const RULES: &[Rule] = &[
         keywords: &[
             r"xapp",
         ],
+        gated: true,
         entropy: 0.0,
         allowlists: &[],
     },
@@ -1975,6 +2144,7 @@ pub(crate) const RULES: &[Rule] = &[
         keywords: &[
             r"xoxb",
         ],
+        gated: true,
         entropy: 0.0,
         allowlists: &[],
     },
@@ -1987,6 +2157,7 @@ pub(crate) const RULES: &[Rule] = &[
             r"xoxe.xoxb-",
             r"xoxe.xoxp-",
         ],
+        gated: false,
         entropy: 0.0,
         allowlists: &[],
     },
@@ -1998,6 +2169,7 @@ pub(crate) const RULES: &[Rule] = &[
         keywords: &[
             r"xoxe-",
         ],
+        gated: true,
         entropy: 0.0,
         allowlists: &[],
     },
@@ -2009,6 +2181,7 @@ pub(crate) const RULES: &[Rule] = &[
         keywords: &[
             r"xoxb",
         ],
+        gated: true,
         entropy: 0.0,
         allowlists: &[],
     },
@@ -2021,6 +2194,7 @@ pub(crate) const RULES: &[Rule] = &[
             r"xoxo",
             r"xoxs",
         ],
+        gated: true,
         entropy: 0.0,
         allowlists: &[],
     },
@@ -2033,6 +2207,7 @@ pub(crate) const RULES: &[Rule] = &[
             r"xoxa",
             r"xoxr",
         ],
+        gated: true,
         entropy: 0.0,
         allowlists: &[],
     },
@@ -2045,6 +2220,7 @@ pub(crate) const RULES: &[Rule] = &[
             r"xoxp-",
             r"xoxe-",
         ],
+        gated: true,
         entropy: 0.0,
         allowlists: &[],
     },
@@ -2056,6 +2232,7 @@ pub(crate) const RULES: &[Rule] = &[
         keywords: &[
             r"hooks.slack.com",
         ],
+        gated: false,
         entropy: 0.0,
         allowlists: &[],
     },
@@ -2067,6 +2244,7 @@ pub(crate) const RULES: &[Rule] = &[
         keywords: &[
             r"snyk",
         ],
+        gated: true,
         entropy: 0.0,
         allowlists: &[],
     },
@@ -2078,6 +2256,7 @@ pub(crate) const RULES: &[Rule] = &[
         keywords: &[
             r"sonar",
         ],
+        gated: true,
         entropy: 0.0,
         allowlists: &[],
     },
@@ -2090,6 +2269,7 @@ pub(crate) const RULES: &[Rule] = &[
             r"sgp_",
             r"sourcegraph",
         ],
+        gated: true,
         entropy: 0.0,
         allowlists: &[],
     },
@@ -2102,6 +2282,7 @@ pub(crate) const RULES: &[Rule] = &[
             r"sq0atp-",
             r"eaaa",
         ],
+        gated: true,
         entropy: 0.0,
         allowlists: &[],
     },
@@ -2113,6 +2294,7 @@ pub(crate) const RULES: &[Rule] = &[
         keywords: &[
             r"squarespace",
         ],
+        gated: true,
         entropy: 0.0,
         allowlists: &[],
     },
@@ -2129,6 +2311,7 @@ pub(crate) const RULES: &[Rule] = &[
             r"rk_live",
             r"rk_prod",
         ],
+        gated: true,
         entropy: 0.0,
         allowlists: &[],
     },
@@ -2140,6 +2323,7 @@ pub(crate) const RULES: &[Rule] = &[
         keywords: &[
             r"sumo",
         ],
+        gated: true,
         entropy: 0.0,
         allowlists: &[],
     },
@@ -2151,6 +2335,7 @@ pub(crate) const RULES: &[Rule] = &[
         keywords: &[
             r"telegr",
         ],
+        gated: true,
         entropy: 0.0,
         allowlists: &[],
     },
@@ -2162,6 +2347,7 @@ pub(crate) const RULES: &[Rule] = &[
         keywords: &[
             r"travis",
         ],
+        gated: true,
         entropy: 0.0,
         allowlists: &[],
     },
@@ -2173,6 +2359,7 @@ pub(crate) const RULES: &[Rule] = &[
         keywords: &[
             r"sk",
         ],
+        gated: true,
         entropy: 0.0,
         allowlists: &[],
     },
@@ -2184,6 +2371,7 @@ pub(crate) const RULES: &[Rule] = &[
         keywords: &[
             r"twitch",
         ],
+        gated: true,
         entropy: 0.0,
         allowlists: &[],
     },
@@ -2195,6 +2383,7 @@ pub(crate) const RULES: &[Rule] = &[
         keywords: &[
             r"twitter",
         ],
+        gated: true,
         entropy: 0.0,
         allowlists: &[],
     },
@@ -2206,6 +2395,7 @@ pub(crate) const RULES: &[Rule] = &[
         keywords: &[
             r"twitter",
         ],
+        gated: true,
         entropy: 0.0,
         allowlists: &[],
     },
@@ -2217,6 +2407,7 @@ pub(crate) const RULES: &[Rule] = &[
         keywords: &[
             r"twitter",
         ],
+        gated: true,
         entropy: 0.0,
         allowlists: &[],
     },
@@ -2228,6 +2419,7 @@ pub(crate) const RULES: &[Rule] = &[
         keywords: &[
             r"twitter",
         ],
+        gated: true,
         entropy: 0.0,
         allowlists: &[],
     },
@@ -2239,6 +2431,7 @@ pub(crate) const RULES: &[Rule] = &[
         keywords: &[
             r"twitter",
         ],
+        gated: true,
         entropy: 0.0,
         allowlists: &[],
     },
@@ -2250,6 +2443,7 @@ pub(crate) const RULES: &[Rule] = &[
         keywords: &[
             r"tfp_",
         ],
+        gated: true,
         entropy: 0.0,
         allowlists: &[],
     },
@@ -2261,6 +2455,7 @@ pub(crate) const RULES: &[Rule] = &[
         keywords: &[
             r"hvb.",
         ],
+        gated: true,
         entropy: 0.0,
         allowlists: &[],
     },
@@ -2273,6 +2468,7 @@ pub(crate) const RULES: &[Rule] = &[
             r"hvs.",
             r"s.",
         ],
+        gated: true,
         entropy: 3.5,
         allowlists: &[
             Allowlist {
@@ -2293,6 +2489,7 @@ pub(crate) const RULES: &[Rule] = &[
         keywords: &[
             r"yandex",
         ],
+        gated: true,
         entropy: 0.0,
         allowlists: &[],
     },
@@ -2304,6 +2501,7 @@ pub(crate) const RULES: &[Rule] = &[
         keywords: &[
             r"yandex",
         ],
+        gated: true,
         entropy: 0.0,
         allowlists: &[],
     },
@@ -2315,6 +2513,7 @@ pub(crate) const RULES: &[Rule] = &[
         keywords: &[
             r"yandex",
         ],
+        gated: true,
         entropy: 0.0,
         allowlists: &[],
     },
@@ -2326,6 +2525,7 @@ pub(crate) const RULES: &[Rule] = &[
         keywords: &[
             r"zendesk",
         ],
+        gated: true,
         entropy: 0.0,
         allowlists: &[],
     },

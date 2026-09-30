@@ -43,6 +43,10 @@ pub(crate) struct Rule {
     pub secret_group: usize,
     /// Lower-case keywords; the rule runs only if one occurs in the text.
     pub keywords: &'static [&'static str],
+    /// Whether every match contains a keyword. An ungated rule (its keyword can
+    /// sit before the token, as with Airtable and Facebook) always runs, so a
+    /// streaming flush that holds the token but not the keyword still sees it.
+    pub gated: bool,
     /// Minimum Shannon entropy; `0.0` = no minimum.
     pub entropy: f64,
     /// Rule-level allowlists.
@@ -178,7 +182,7 @@ pub(crate) fn detect(text: &str) -> Vec<Span> {
     let Some(keywords) = &c.keywords else {
         return Vec::new();
     };
-    let mut candidate = vec![false; c.rules.len()];
+    let mut candidate: Vec<bool> = c.rules.iter().map(|r| !r.rule.gated).collect();
     for m in keywords.find_overlapping_iter(text) {
         for &i in &c.keyword_rules[m.pattern().as_usize()] {
             candidate[i] = true;

@@ -132,3 +132,71 @@ fn vendor_secrets_never_leak_at_any_chunk_size() {
         }
     }
 }
+
+/// Replace sentinel nonces so two stacks' outputs compare structurally.
+fn normalize(s: &str) -> String {
+    regex::Regex::new(r"_[0-9a-f]{8}\]")
+        .unwrap()
+        .replace_all(s, "_NONCE]")
+        .into_owned()
+}
+
+/// Texts that contain secrets, including forms that need more than a regex:
+/// keywords well before their token, seed phrases (valid, mistyped, JSON).
+fn positive_corpus() -> Vec<String> {
+    let abandon: Vec<&str> = std::iter::repeat_n("abandon", 11)
+        .chain(["about"])
+        .collect();
+    let legal = "legal winner thank year wave sausage worth useful legal winner thank year wave sausage worth useful legal winner thank year wave sausage worth title";
+    let airtable = format!("pat{}.{}", take(ALNUM, 14), &HEX[..64]);
+    let facebook = format!(
+        "{}|{}",
+        &"123456789012345"[..15],
+        take(&ALNUM.to_lowercase(), 32)
+    );
+    let mut texts: Vec<String> = secrets()
+        .into_iter()
+        .map(|(_, s)| format!("Use this: {s}\nthen restart."))
+        .collect();
+    texts.extend([
+        format!("Your airtable workspace is set up. Paste the token {airtable} into the config."),
+        format!("The facebook app is live, and the page uses {facebook} for now."),
+        format!(
+            "My wallet seed phrase: {} please keep it safe",
+            abandon.join(" ")
+        ),
+        format!(
+            "seed = [{}]",
+            abandon
+                .iter()
+                .map(|w| format!("'{w}'"))
+                .collect::<Vec<_>>()
+                .join(", ")
+        ),
+        format!("backup words {legal} and nothing else"),
+        format!("typo version: {} end", legal.replacen("thank", "that", 1)),
+    ]);
+    texts
+}
+
+#[test]
+fn streaming_output_equals_unary_on_positive_corpus() {
+    for text in positive_corpus() {
+        let mut unary_stack = stack();
+        let unary = normalize(&unary_stack.run_output(&text).unwrap());
+        assert!(unary.contains("[REDACTED_"), "nothing redacted: {text}");
+        for chunk_len in 1..=8 {
+            let mut s = stack();
+            let mut runner = StreamOutput::new(&s);
+            let mut streamed = String::new();
+            let mut i = 0;
+            while i < text.len() {
+                let end = (i + chunk_len).min(text.len());
+                streamed.push_str(&runner.push(&mut s, &text[i..end]).unwrap());
+                i = end;
+            }
+            streamed.push_str(&runner.finish(&mut s).unwrap());
+            assert_eq!(normalize(&streamed), unary, "chunk_len {chunk_len}: {text}");
+        }
+    }
+}
