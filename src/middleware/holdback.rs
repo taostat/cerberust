@@ -27,17 +27,28 @@
 //!
 //! [`stream_patterns`]: crate::Scanner::stream_patterns
 
+use std::collections::HashMap;
+use std::sync::{Arc, Mutex, OnceLock};
+
 use regex_automata::{
     hybrid::dfa::{Cache, DFA},
     util::start::Config as StartConfig,
     Anchored, MatchKind,
 };
 
+/// Distinct pattern sets whose compiled DFA is kept for reuse. Beyond this the
+/// memo is cleared: caller-supplied regex scanners can vary per tenant, and the
+/// memo must not grow without bound.
+const MEMO_LIMIT: usize = 64;
+
 /// A compiled hold-back DFA over the union of the active output scanners'
 /// stream patterns.
 #[derive(Debug)]
 pub struct HoldBackDfa {
-    dfa: DFA,
+    dfa: Arc<DFA>,
+    /// The lazy DFA's state cache, kept across calls so states built for one
+    /// buffer are reused for the next instead of being recomputed per push.
+    cache: Mutex<Cache>,
     /// `true` when no scanner contributed a pattern: there is nothing to hold
     /// back for matches (sentinel hold-back is handled separately), so every
     /// buffer flushes whole.
@@ -49,11 +60,38 @@ impl HoldBackDfa {
     /// to compile into the combined DFA are dropped — the same defensive stance
     /// the unary detectors take — leaving a DFA over whatever compiled. An empty
     /// or all-failing pattern set yields a DFA that holds nothing back.
+    ///
+    /// Compiling the union is the expensive step (hundreds of vendor secret
+    /// patterns), and every stream builds one, so the compiled DFA is memoised
+    /// per distinct pattern set; each call still gets its own per-use cache.
     #[must_use]
     pub fn new(patterns: &[String]) -> Self {
+        static MEMO: OnceLock<Mutex<HashMap<Vec<String>, Arc<DFA>>>> = OnceLock::new();
         if patterns.is_empty() {
             return Self::nothing();
         }
+        let memo = MEMO.get_or_init(|| Mutex::new(HashMap::new()));
+        if let Some(dfa) = memo.lock().ok().and_then(|m| m.get(patterns).cloned()) {
+            return Self::with_dfa(dfa, false);
+        }
+        let built = Self::build(patterns);
+        if !built.empty {
+            if let Ok(mut m) = memo.lock() {
+                if m.len() >= MEMO_LIMIT {
+                    m.clear();
+                }
+                m.insert(patterns.to_vec(), Arc::clone(&built.dfa));
+            }
+        }
+        built
+    }
+
+    fn with_dfa(dfa: Arc<DFA>, empty: bool) -> Self {
+        let cache = Mutex::new(dfa.create_cache());
+        Self { dfa, cache, empty }
+    }
+
+    fn build(patterns: &[String]) -> Self {
         let patterns: Vec<String> = patterns.iter().map(|p| ascii_word_boundaries(p)).collect();
         // `All` match semantics keep every alive thread rather than reporting the
         // leftmost-first match and stopping — the hold-back needs to know a
@@ -62,7 +100,7 @@ impl HoldBackDfa {
             .configure(DFA::config().match_kind(MatchKind::All))
             .build_many(&patterns);
         match built {
-            Ok(dfa) => Self { dfa, empty: false },
+            Ok(dfa) => Self::with_dfa(Arc::new(dfa), false),
             Err(_) => Self::compile_individually(&patterns),
         }
     }
@@ -76,7 +114,7 @@ impl HoldBackDfa {
             .configure(DFA::config().match_kind(MatchKind::All))
             .build_many::<&str>(&[])
             .unwrap_or_else(|_| never_match_dfa());
-        Self { dfa, empty: true }
+        Self::with_dfa(Arc::new(dfa), true)
     }
 
     // The `nothing()` DFA is never consulted (an `empty` runner returns the full
@@ -102,7 +140,7 @@ impl HoldBackDfa {
             .configure(DFA::config().match_kind(MatchKind::All))
             .build_many(&good)
         {
-            Ok(dfa) => Self { dfa, empty: false },
+            Ok(dfa) => Self::with_dfa(Arc::new(dfa), false),
             Err(_) => Self::nothing(),
         }
     }
@@ -120,7 +158,12 @@ impl HoldBackDfa {
         if self.empty || at_eof {
             return buf.len();
         }
-        let mut cache = self.dfa.create_cache();
+        // A poisoned lock only means an earlier call panicked mid-scan; the
+        // cache is still a valid cache, so recover it rather than rebuild.
+        let mut cache = self
+            .cache
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         for s in 0..buf.len() {
             if self.alive_at_eof(&mut cache, &buf[s..]) {
                 return s;
