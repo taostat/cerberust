@@ -227,7 +227,7 @@ fn issuer_prefix_ok(digits: &str) -> bool {
         || (matches!(prefix4, Some(6011)) && matches!(len, 16 | 19))
         || (matches!(prefix2, Some(65)) && matches!(len, 16 | 19))
         || (matches!(prefix3, Some(644..=649)) && matches!(len, 16 | 19))
-        || (matches!(prefix6, Some(622126..=622925)) && matches!(len, 16 | 19))
+        || (matches!(prefix6, Some(622_126..=622_925)) && matches!(len, 16 | 19))
         || (matches!(prefix3, Some(300..=305)) && len == 14)
         || (matches!(prefix2, Some(36 | 38 | 39)) && len == 14)
         || (matches!(prefix4, Some(3528..=3589)) && matches!(len, 16..=19))
@@ -671,7 +671,9 @@ mod tests {
         ] {
             assert!(card_number_ok(card), "missed card: {card}");
             assert!(
-                detect_structured(card).iter().any(|s| s.ty == "CREDIT_CARD"),
+                detect_structured(card)
+                    .iter()
+                    .any(|s| s.ty == "CREDIT_CARD"),
                 "missed card span: {card}"
             );
         }
