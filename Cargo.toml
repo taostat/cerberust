@@ -1,6 +1,6 @@
 [package]
 name = "cerberust"
-version = "0.1.1"
+version = "0.2.0"
 edition = "2021"
 rust-version = "1.83"
 description = "Fast Rust guardrails for LLM input/output — composable scanners (PII, secrets, prompt-injection) and streaming middleware."
@@ -31,6 +31,12 @@ regex = "1.11"
 # same audited regex-crate ecosystem `regex` already depends on — the version is
 # unified in Cargo.lock and `cargo deny` stays clean.
 regex-automata = "0.4"
+# The vendored gitleaks secret rules each carry keywords; a rule's regex runs
+# only when one of its keywords occurs in the text (gitleaks' own prefilter).
+# One case-insensitive Aho-Corasick pass over ~200 keywords picks the candidate
+# rules instead of running every regex. `aho-corasick` is already in the tree as
+# a `regex` dependency, so this adds no new crate.
+aho-corasick = "1"
 zeroize = { version = "1.8", features = ["derive"] }
 rand = "0.8"
 hex = "0.4"
@@ -91,6 +97,11 @@ prompt-injection = ["dep:ort", "dep:tokenizers"]
 
 [dev-dependencies]
 proptest = "1.6"
+# Parses the vendored upstream `data/gitleaks/gitleaks.toml` in the rule
+# generator test (tests/gitleaks_rules.rs), which renders and checks
+# src/scanner/gitleaks_rules.rs. Test-only: the library links the generated
+# Rust table, never a TOML parser.
+toml = "1.0.7"
 
 # The LLM Guard comparison bench. A custom `harness = false` bench: a
 # plain `main()` that reads the shared corpus, runs each scanner, and writes the

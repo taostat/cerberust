@@ -1,0 +1,33 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: api
+  namespace: prod
+  annotations:
+    config-revision: "2026-09-30"
+spec:
+  replicas: 3
+  template:
+    spec:
+      containers:
+        - name: api
+          image: quay.io/example/api:ccb1af425b4e0a229211186f3f5bb8cd2a516c1d@sha256:0c84759be2ddf685d035566e7a31a95800d715216fc68c82165be5c501f23643
+          env:
+            - name: DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: api-secrets
+                  key: database-url
+            - name: API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: api-secrets
+                  key: api-key
+          resources:
+            requests: {cpu: 500m, memory: 512Mi}
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: api-secrets
+type: Opaque

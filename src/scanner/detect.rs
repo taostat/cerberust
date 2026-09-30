@@ -13,6 +13,8 @@ use std::sync::OnceLock;
 
 use regex::Regex;
 
+use super::{bip39, gitleaks};
+
 /// One detected entity: a byte range in the scanned text, its type, and a 0–1
 /// confidence used for overlap resolution and thresholding.
 #[derive(Debug, Clone, PartialEq)]
@@ -227,7 +229,7 @@ fn issuer_prefix_ok(digits: &str) -> bool {
         || (matches!(prefix4, Some(6011)) && matches!(len, 16 | 19))
         || (matches!(prefix2, Some(65)) && matches!(len, 16 | 19))
         || (matches!(prefix3, Some(644..=649)) && matches!(len, 16 | 19))
-        || (matches!(prefix6, Some(622126..=622925)) && matches!(len, 16 | 19))
+        || (matches!(prefix6, Some(622_126..=622_925)) && matches!(len, 16 | 19))
         || (matches!(prefix3, Some(300..=305)) && len == 14)
         || (matches!(prefix2, Some(36 | 38 | 39)) && len == 14)
         || (matches!(prefix4, Some(3528..=3589)) && matches!(len, 16..=19))
@@ -477,8 +479,20 @@ struct SecretRule {
 
 /// The vendor secret `(type, pattern)` source list — the single source both the
 /// compiled detector regexes and the streaming hold-back DFA read.
-const SECRET_PATTERNS: [(&str, &str); 8] = [
+const SECRET_PATTERNS: [(&str, &str); 11] = [
     ("AWS_ACCESS_KEY", r"AKIA[0-9A-Z]{16}"),
+    // Taostats user-management API keys: `<product>_live_` + 32 random bytes as
+    // hex, for the GM, Blockmachine and Taostats tenants. Hex after an
+    // underscore prefix is neither hex-only nor high enough entropy for the
+    // backstop, so these need an explicit rule.
+    ("GM_API_KEY", r"\bgm_live_[0-9a-f]{64}\b"),
+    ("BLOCKMACHINE_API_KEY", r"\bbm_live_[0-9a-f]{64}\b"),
+    // Taostats API keys: `tao-<uuid>:<8-hex HMAC>` (management API) and the
+    // user-management API's `ts_live_` keys.
+    (
+        "TAOSTATS_API_KEY",
+        r"\b(?:tao-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}:[0-9a-f]{8}|ts_live_[0-9a-f]{64})\b",
+    ),
     ("GITHUB_TOKEN", r"ghp_[A-Za-z0-9]{36}"),
     ("STRIPE_KEY", r"sk_live_[A-Za-z0-9]{24,}"),
     ("OPENAI_KEY", r"sk-[A-Za-z0-9]{20,}"),
@@ -513,6 +527,7 @@ pub fn secret_pattern_sources() -> Vec<String> {
         .iter()
         .map(|(_, p)| (*p).to_owned())
         .chain(CREDENTIAL_PATTERNS.iter().map(|p| (*p).to_owned()))
+        .chain(gitleaks::pattern_sources())
         .collect()
 }
 
@@ -542,11 +557,13 @@ fn url_credential_rule() -> &'static Regex {
     RE.get_or_init(|| structured_rule(CREDENTIAL_PATTERNS[1]))
 }
 
-/// Detect credentials: known-vendor patterns, labelled `key=value` secrets,
+/// Detect credentials: known-vendor patterns (the crate's own plus the ported
+/// gitleaks rules), BIP39 seed phrases, labelled `key=value` secrets,
 /// URL-embedded passwords, and a high-entropy backstop over bare tokens.
 #[must_use]
 pub fn detect_secrets(text: &str) -> Vec<Span> {
-    let mut spans = Vec::new();
+    let mut spans = gitleaks::detect(text);
+    spans.extend(bip39::detect(text));
     for rule in secret_rules() {
         for m in rule.re.find_iter(text) {
             spans.push(Span::new(m.start(), m.end(), rule.ty, 0.99));
@@ -638,6 +655,34 @@ mod tests {
     use super::*;
 
     #[test]
+    fn detects_taostats_api_keys() {
+        // Synthetic keys in each issued format; never real credentials.
+        let hex64 = "7c0e9b4a1d2f3e5a6b7c8d9e0f1a2b3c4d5e6f708192a3b4c5d6e7f8091a2b3c";
+        for (key, ty) in [
+            (format!("gm_live_{hex64}"), "GM_API_KEY"),
+            (format!("bm_live_{hex64}"), "BLOCKMACHINE_API_KEY"),
+            (format!("ts_live_{hex64}"), "TAOSTATS_API_KEY"),
+            (
+                "tao-3f2b8c1e-9d4a-4e6b-8a7c-5d1e2f3a4b5c:9a8b7c6d".to_owned(),
+                "TAOSTATS_API_KEY",
+            ),
+        ] {
+            let text = format!("Authorization: {key}\n");
+            let spans = resolve_overlaps(detect_secrets(&text));
+            assert!(
+                spans
+                    .iter()
+                    .any(|s| s.ty == ty && text[s.start..s.end] == key),
+                "{ty} not detected in {text:?}: {spans:?}"
+            );
+        }
+        // A prefix without the full body is not a key.
+        assert!(!detect_secrets("gm_live_1234")
+            .iter()
+            .any(|s| s.ty == "GM_API_KEY"));
+    }
+
+    #[test]
     fn shannon_entropy_of_uniform_is_high() {
         assert!(shannon_entropy("abcdefghijklmnop") > 3.0);
         assert!(shannon_entropy("aaaaaaaaaaaaaaaa") < 0.1);
@@ -671,7 +716,9 @@ mod tests {
         ] {
             assert!(card_number_ok(card), "missed card: {card}");
             assert!(
-                detect_structured(card).iter().any(|s| s.ty == "CREDIT_CARD"),
+                detect_structured(card)
+                    .iter()
+                    .any(|s| s.ty == "CREDIT_CARD"),
                 "missed card span: {card}"
             );
         }
