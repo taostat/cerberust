@@ -52,7 +52,13 @@ fn secrets() -> Vec<(&'static str, String)> {
         ),
         (
             "SLACK_BOT_TOKEN",
-            format!("xoxb-1234567890123-1234567890123-{}", take(ALNUM, 24)),
+            // Assembled so the source holds no token-shaped literal.
+            format!(
+                "{}-{n}-{n}-{}",
+                "xoxb",
+                take(ALNUM, 24),
+                n = "1234567890123"
+            ),
         ),
         (
             "ANTHROPIC_API_KEY",
