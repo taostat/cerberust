@@ -6,3 +6,14 @@ input and output. cerberust borrows concepts — the scanner/vault model, the
 reversible-redaction approach, and the prompt-injection classifier
 (protectai/deberta-v3-base-prompt-injection-v2) — but shares no source code with
 it. We credit llm-guard as prior art with thanks.
+
+Third-party data
+----------------
+
+src/scanner/gitleaks_rules.rs is generated from the default configuration of
+gitleaks v8.30.1 (https://github.com/gitleaks/gitleaks), vendored unmodified in
+data/gitleaks/gitleaks.toml. gitleaks is MIT-licensed, Copyright (c) 2019
+Zachary Rice; see data/gitleaks/LICENSE.
+
+data/bip39/english.txt is the BIP-0039 English wordlist
+(https://github.com/bitcoin/bips), MIT-licensed; see data/bip39/LICENSE.

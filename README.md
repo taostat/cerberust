@@ -100,7 +100,7 @@ cargo features, since they pull heavy dependencies.)
 | Scanner | Protects you from | Mode when added |
 |---|---|---|
 | [`PiiScanner`](docs/scanners/pii.md) | leaking emails, phone numbers, credit cards, IPs, SSNs, and IBANs to a model provider | redact (round-trip — restore in the reply) |
-| [`SecretScanner`](docs/scanners/secrets.md) | API keys, tokens, and private keys pasted into a prompt reaching a provider or being echoed back | redact, one-way (never restored) |
+| [`SecretScanner`](docs/scanners/secrets.md) | API keys, tokens, private keys and seed phrases pasted into a prompt reaching a provider or being echoed back (includes 200 rules ported from gitleaks) | redact, one-way (never restored) |
 | [`RegexScanner`](docs/scanners/regex.md) | your *own* sensitive formats — ticket ids, account numbers, internal tokens | redact your patterns |
 | [`BanSubstringsScanner`](docs/scanners/ban-substrings.md) | specific phrases you never want in a prompt or a reply | block on match |
 | [`BanTopicsScanner`](docs/scanners/ban-topics.md) | whole subjects you've ruled out, defined by keywords | block on match |
@@ -125,7 +125,8 @@ shared 290-sample corpus (Apple Silicon), comparing **only like-for-like**:
 | Prompt-injection (same model) | 126/s | 96/s | **tie** — byte-identical detection |
 
 **PII & Secrets — a different approach, on purpose.** cerberust's deterministic
-detectors run at **>1.3M/s with perfect precision/recall on structured entities**,
+detectors run at **hundreds of thousands to over a million samples/s with perfect
+precision/recall on structured entities**,
 and don't over-redact — where `llm-guard`'s NER scores 0.75 / 0.89. It's regex vs a
 neural net, so we don't headline a speed multiple; NER leads on free-text names
 cerberust deliberately doesn't attempt. Full methodology + honest caveats:

@@ -9,7 +9,9 @@
 //! [`PiiScanner`](crate::scanners::PiiScanner): identical redact machinery,
 //! opposite restore default.
 
-use crate::scanner::detect::{detect_secrets, resolve_overlaps, secret_pattern_sources};
+use crate::scanner::detect::{
+    detect_secrets, resolve_overlaps, secret_pattern_sources, seed_phrase_hold_floor,
+};
 use crate::scanner::{
     Direction, Disposition, RestorePolicy, ScanCtx, ScanResult, Scanner, ScannerId, Verdict,
 };
@@ -97,6 +99,10 @@ impl Scanner for SecretScanner {
 
     fn stream_patterns(&self) -> Vec<String> {
         secret_pattern_sources()
+    }
+
+    fn stream_hold_floor(&self, buf: &[u8]) -> usize {
+        seed_phrase_hold_floor(buf)
     }
 }
 

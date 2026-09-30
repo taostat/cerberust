@@ -7,17 +7,47 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.0]
+
 ### Security
 
 - **`wasm` feature: move `wasmtime` from 44.0.3 to the 36.x long-term-support
   line (36.0.16)**, fixing RUSTSEC-2026-0222, RUSTSEC-2026-0269 and
   RUSTSEC-2026-0316.
 
+### Added
+
+- **`SecretScanner` recognizes 200 vendor credential formats ported from
+  gitleaks v8.30.1**, generated from the vendored upstream config and matched
+  with gitleaks' keyword prefilter, secret group, entropy minimum and
+  allowlists. Generic, identifier, public-key and path-scoped rules are
+  excluded (listed with reasons in `EXCLUDED`).
+- **Taostats API keys** (`gm_live_`, `bm_live_`, `ts_live_`, `tao-<uuid>:<sig>`).
+- **BIP39 seed phrases**, redacted as `SEED_PHRASE`: checksum-valid 12–24 word
+  windows, and runs of exactly a mnemonic's length even with a bad checksum.
+  Held back on streams so a phrase is never split.
+- `Scanner::stream_hold_floor`: a scanner can set its own streaming hold point.
+- A negative corpus and precision test requiring zero detections from the new
+  rules on ordinary prompt content.
+
+### Fixed
+
+- The streaming runner no longer flushes part of a token. A shorter pattern
+  alive inside a longer key could previously flush the key's prefix.
+
 ### Changed
 
 - **Minimum supported Rust version is now 1.88** (was 1.83). wasmtime 36
   requires 1.86; `ort` (`prompt-injection` feature) and current `encoding_rs`
   releases (`wasm` feature) require 1.88.
+- The streaming hold-back DFA is compiled once per pattern set and reused across
+  streams, and keeps its lazy state cache across pushes.
+- Secret-scanner throughput on the benchmark corpus is a little under half of
+  0.1.1's (~570k samples/s), the cost of the added rules. Ported rules run only
+  in windows around their keyword hits.
+- A span matched by both an original vendor pattern and a ported rule keeps the
+  original type name; spans only the new rules find use new type names (the
+  gitleaks rule id upper-cased).
 
 ## [0.1.1]
 
@@ -111,6 +141,7 @@ Initial public release.
 - **Benchmark harness** (`benchmarks/`) — head-to-head precision/recall and
   throughput against Python's `llm-guard` over a shared labelled corpus.
 
-[Unreleased]: https://github.com/taostat/cerberust/compare/v0.1.1...HEAD
+[Unreleased]: https://github.com/taostat/cerberust/compare/v0.2.0...HEAD
+[0.2.0]: https://github.com/taostat/cerberust/compare/v0.1.1...v0.2.0
 [0.1.1]: https://github.com/taostat/cerberust/compare/v0.1.0...v0.1.1
 [0.1.0]: https://github.com/taostat/cerberust/releases/tag/v0.1.0

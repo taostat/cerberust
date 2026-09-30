@@ -1,0 +1,23 @@
+Traceback (most recent call last):
+  File "/app/worker/tasks.py", line 214, in process_batch
+    result = client.submit(batch_id="1c943e32-964d-4441-b625-1e9b90cf6c0f", items=items)
+  File "/app/.venv/lib/python3.13/site-packages/httpx/_client.py", line 1054, in request
+    raise HTTPStatusError(message, request=request, response=self)
+httpx.HTTPStatusError: Client error '429 Too Many Requests' for url 'https://api.example.com/v1/batch/91060604-eb72-4daa-8ad2-038f22bbdd05'
+
+thread 'tokio-runtime-worker' panicked at gateway/src/pipeline/runner.rs:412:17:
+called `Result::unwrap()` on an `Err` value: Timeout { request_id: "JGRGVYHR3VQ8EYQ24G8MP00E6R", elapsed_ms: 30001 }
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+Error: connect ECONNREFUSED 127.0.0.1:6379
+    at TCPConnectWrap.afterConnect [as oncomplete] (node:net:1611:16) {
+  errno: -111,
+  code: 'ECONNREFUSED',
+  syscall: 'connect',
+  address: '127.0.0.1',
+  port: 6379
+}
+
+java.lang.IllegalStateException: Session c1b8094c-0982-4721-950d-8461a50eb99a already closed
+	at com.example.session.SessionManager.close(SessionManager.java:88)
+	at com.example.api.Handler.handle(Handler.java:41)

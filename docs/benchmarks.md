@@ -45,7 +45,7 @@ speed multiple against a neural net. What the deterministic approach delivers on
 | Scanner | cerberust throughput | cerberust P/R | llm-guard P/R (same corpus) |
 |---|---|---|---|
 | PII (structured) | 1.34M/s | 1.00 / 1.00 | 0.75 / 0.89 |
-| Secrets | 1.31M/s | 1.00 / 1.00 | 1.00 / 0.45 |
+| Secrets | ~570k/s | 1.00 / 1.00 | 1.00 / 0.45 |
 
 Perfect precision and recall on entities with a recognizable shape — and, unlike an
 NER pipeline, **no over-redaction of ordinary words**. NER's strength is free-text
@@ -95,7 +95,8 @@ point of the methodology.
   detectors hit perfect precision/recall and don't over-redact, where `llm-guard`'s
   NER scores 0.75 / 0.89 (PII) and detect-secrets recalls 0.45. We don't headline a
   speed multiple here — it's regex vs a neural net — but the throughput is high
-  (>1.3M/s) and, for a guardrail, the precision is the point.
+  (hundreds of thousands to over a million samples/s) and, for a guardrail, the
+  precision is the point.
 
 ## The honest caveats
 

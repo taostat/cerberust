@@ -27,17 +27,28 @@
 //!
 //! [`stream_patterns`]: crate::Scanner::stream_patterns
 
+use std::collections::HashMap;
+use std::sync::{Arc, Mutex, OnceLock};
+
 use regex_automata::{
     hybrid::dfa::{Cache, DFA},
     util::start::Config as StartConfig,
     Anchored, MatchKind,
 };
 
+/// Distinct pattern sets whose compiled DFA is kept for reuse. Beyond this the
+/// memo is cleared: caller-supplied regex scanners can vary per tenant, and the
+/// memo must not grow without bound.
+const MEMO_LIMIT: usize = 64;
+
 /// A compiled hold-back DFA over the union of the active output scanners'
 /// stream patterns.
 #[derive(Debug)]
 pub struct HoldBackDfa {
-    dfa: DFA,
+    dfa: Arc<DFA>,
+    /// The lazy DFA's state cache, kept across calls so states built for one
+    /// buffer are reused for the next instead of being recomputed per push.
+    cache: Mutex<Cache>,
     /// `true` when no scanner contributed a pattern: there is nothing to hold
     /// back for matches (sentinel hold-back is handled separately), so every
     /// buffer flushes whole.
@@ -49,11 +60,38 @@ impl HoldBackDfa {
     /// to compile into the combined DFA are dropped — the same defensive stance
     /// the unary detectors take — leaving a DFA over whatever compiled. An empty
     /// or all-failing pattern set yields a DFA that holds nothing back.
+    ///
+    /// Compiling the union is the expensive step (hundreds of vendor secret
+    /// patterns), and every stream builds one, so the compiled DFA is memoised
+    /// per distinct pattern set; each call still gets its own per-use cache.
     #[must_use]
     pub fn new(patterns: &[String]) -> Self {
+        static MEMO: OnceLock<Mutex<HashMap<Vec<String>, Arc<DFA>>>> = OnceLock::new();
         if patterns.is_empty() {
             return Self::nothing();
         }
+        let memo = MEMO.get_or_init(|| Mutex::new(HashMap::new()));
+        if let Some(dfa) = memo.lock().ok().and_then(|m| m.get(patterns).cloned()) {
+            return Self::with_dfa(dfa, false);
+        }
+        let built = Self::build(patterns);
+        if !built.empty {
+            if let Ok(mut m) = memo.lock() {
+                if m.len() >= MEMO_LIMIT {
+                    m.clear();
+                }
+                m.insert(patterns.to_vec(), Arc::clone(&built.dfa));
+            }
+        }
+        built
+    }
+
+    fn with_dfa(dfa: Arc<DFA>, empty: bool) -> Self {
+        let cache = Mutex::new(dfa.create_cache());
+        Self { dfa, cache, empty }
+    }
+
+    fn build(patterns: &[String]) -> Self {
         let patterns: Vec<String> = patterns.iter().map(|p| ascii_word_boundaries(p)).collect();
         // `All` match semantics keep every alive thread rather than reporting the
         // leftmost-first match and stopping — the hold-back needs to know a
@@ -62,7 +100,7 @@ impl HoldBackDfa {
             .configure(DFA::config().match_kind(MatchKind::All))
             .build_many(&patterns);
         match built {
-            Ok(dfa) => Self { dfa, empty: false },
+            Ok(dfa) => Self::with_dfa(Arc::new(dfa), false),
             Err(_) => Self::compile_individually(&patterns),
         }
     }
@@ -76,7 +114,7 @@ impl HoldBackDfa {
             .configure(DFA::config().match_kind(MatchKind::All))
             .build_many::<&str>(&[])
             .unwrap_or_else(|_| never_match_dfa());
-        Self { dfa, empty: true }
+        Self::with_dfa(Arc::new(dfa), true)
     }
 
     // The `nothing()` DFA is never consulted (an `empty` runner returns the full
@@ -102,7 +140,7 @@ impl HoldBackDfa {
             .configure(DFA::config().match_kind(MatchKind::All))
             .build_many(&good)
         {
-            Ok(dfa) => Self { dfa, empty: false },
+            Ok(dfa) => Self::with_dfa(Arc::new(dfa), false),
             Err(_) => Self::nothing(),
         }
     }
@@ -120,10 +158,17 @@ impl HoldBackDfa {
         if self.empty || at_eof {
             return buf.len();
         }
-        let mut cache = self.dfa.create_cache();
+        let mut guard = self.cache.lock().unwrap_or_else(|poisoned| {
+            // An earlier call panicked mid-scan; its cache may be half-updated,
+            // so start from a fresh one rather than trust it.
+            let mut guard = poisoned.into_inner();
+            *guard = self.dfa.create_cache();
+            guard
+        });
         for s in 0..buf.len() {
-            if self.alive_at_eof(&mut cache, &buf[s..]) {
-                return s;
+            let before = s.checked_sub(1).map(|i| buf[i]);
+            if self.alive_at_eof(&mut guard, &buf[s..], before) {
+                return token_start(buf, s);
             }
         }
         buf.len()
@@ -132,12 +177,15 @@ impl HoldBackDfa {
     /// Whether feeding `tail` into the anchored DFA from the start state leaves
     /// it alive (never dead) all the way to the end — i.e. more bytes could
     /// extend or complete a match that began at `tail`'s first byte.
-    fn alive_at_eof(&self, cache: &mut Cache, tail: &[u8]) -> bool {
+    ///
+    /// `before` is the byte preceding `tail` (`None` at the buffer start), so a
+    /// pattern opening with `\b` is not treated as live in the middle of a word.
+    fn alive_at_eof(&self, cache: &mut Cache, tail: &[u8], before: Option<u8>) -> bool {
+        let config = StartConfig::new()
+            .anchored(Anchored::Yes)
+            .look_behind(before);
         // Cannot prove dead ⇒ hold (conservative).
-        let Ok(start) = self
-            .dfa
-            .start_state(cache, &StartConfig::new().anchored(Anchored::Yes))
-        else {
+        let Ok(start) = self.dfa.start_state(cache, &config) else {
             return true;
         };
         let mut state = start;
@@ -153,6 +201,18 @@ impl HoldBackDfa {
         // Reached end-of-buffer without dying: still a viable (live) start.
         !state.is_dead()
     }
+}
+
+/// Snap a hold point down to the start of the whitespace-delimited token that
+/// contains it, so a flush never splits a token: a match starting mid-token
+/// (a shorter pattern alive inside a longer key) must not strand the key's
+/// prefix in the flushed output, where the unary scan no longer sees a whole
+/// key.
+fn token_start(buf: &[u8], hold: usize) -> usize {
+    buf[..hold]
+        .iter()
+        .rposition(u8::is_ascii_whitespace)
+        .map_or(0, |pos| pos + 1)
 }
 
 /// Rewrite Unicode word boundaries (`\b`, `\B`) to their ASCII forms
@@ -219,6 +279,26 @@ mod tests {
 
     fn dfa(pats: &[&str]) -> HoldBackDfa {
         HoldBackDfa::new(&pats.iter().map(|p| (*p).to_owned()).collect::<Vec<_>>())
+    }
+
+    #[test]
+    fn word_boundary_pattern_is_not_live_mid_word() {
+        let d = dfa(&[r"\b[0-9a-f]{40}"]);
+        let mut cache = d.dfa.create_cache();
+        // Inside a word, `\b` cannot hold: not a live start.
+        assert!(!d.alive_at_eof(&mut cache, b"0123", Some(b'a')));
+        // After a space it can.
+        assert!(d.alive_at_eof(&mut cache, b"0123", Some(b' ')));
+    }
+
+    #[test]
+    fn hold_point_snaps_to_the_token_start() {
+        assert_eq!(token_start(b"key gm_live_0123", 12), 4);
+        assert_eq!(token_start(b"abc", 2), 0);
+        assert_eq!(token_start(b"a\nbcd", 3), 2);
+        // A shorter pattern alive inside a longer token holds the whole token.
+        let d = dfa(&["[0-9a-f]{40}"]);
+        assert_eq!(d.safe_flush_len(b"key gm_live_0123", false), 4);
     }
 
     #[test]

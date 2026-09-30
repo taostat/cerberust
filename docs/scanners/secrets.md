@@ -44,23 +44,62 @@ PII entity types.
 
 ## How it works
 
-Three layers of detection, all emitting spans into the shared redact path:
+Four layers of detection, all emitting spans into the shared redact path:
 
-1. **Known vendor formats** — exact patterns for the credentials that have a
-   recognizable shape:
-   - AWS access keys (`AKIA…`)
-   - GitHub tokens (`ghp_…`)
-   - Stripe live keys (`sk_live_…`)
-   - OpenAI keys (`sk-…`)
-   - Google API keys (`AIza…`)
-   - Slack webhook URLs
-   - PEM private-key blocks (full block, and the lone header for truncated keys)
+1. **Known vendor formats** — exact patterns for credentials with a recognizable
+   shape:
+   - the original set: AWS access keys (`AKIA…`), GitHub tokens (`ghp_…`), Stripe
+     live keys (`sk_live_…`), OpenAI keys (`sk-…`), Google API keys (`AIza…`),
+     Slack webhook URLs and PEM private-key blocks (full block, and the lone
+     header for truncated keys);
+   - **200 rules ported from [gitleaks](https://github.com/gitleaks/gitleaks)
+     v8.30.1** — GitHub fine-grained and app tokens, GitLab, Anthropic, Slack
+     `xox*`, JWTs, npm, PyPI, Hugging Face, Datadog, Twilio, SendGrid, Vault,
+     cloud providers and many more. The table is generated from the vendored
+     upstream config (`data/gitleaks/`), not copied by hand, and matched with
+     gitleaks' own semantics: a rule's regex runs only when one of its keywords
+     occurs, the redacted span is the rule's secret capture group, an entropy
+     minimum drops placeholder-like values, and gitleaks' allowlists and
+     stopwords apply;
+   - Taostats API keys: `gm_live_…`, `bm_live_…`, `ts_live_…` and
+     `tao-<uuid>:<signature>`.
+
+   Not ported, because a one-way redactor must not damage prompts: gitleaks'
+   `generic-api-key` (a keyword-plus-assignment rule that flags too much ordinary
+   code; the entropy backstop below covers opaque tokens), OAuth client IDs and
+   other identifiers, publishable/public keys meant to be embedded in clients,
+   and rules gitleaks scopes to file paths (a prompt has no path). The full list,
+   with reasons, is `EXCLUDED` in `src/scanner/gitleaks_rules.rs`.
+
+   Known limits of the ported rules: `heroku-api-key` matches any UUID assigned
+   near the word "heroku" (Heroku keys are UUIDs), and `twilio-api-key` matches
+   any `SK` followed by 32 hex characters. gitleaks' detection of secrets
+   inside base64- or hex-encoded text is not ported; encoded secrets are left to
+   the entropy backstop. `sourcegraph-access-token` stays keyword-gated even
+   though its keyword can sit outside the token (its bare 40-hex form would
+   match every git SHA), so on a stream a Sourcegraph token whose keyword was
+   flushed in an earlier chunk is missed.
+
+   When an original pattern and a ported rule match the same span, the original
+   type name wins (`AWS_ACCESS_KEY`, `GITHUB_TOKEN`, …), so existing
+   placeholders keep their names. Ported rules name their placeholders after
+   the gitleaks rule id (`github-fine-grained-pat` → `GITHUB_FINE_GRAINED_PAT`).
 
 2. **Labelled secrets** — `password=…`, `api_key: …`, `token = …`, and
    `scheme://user:password@host` URL credentials. Here it redacts **just the
    value**, not the label, so `password=hunter2` becomes `password=[REDACTED…]`.
 
-3. **High-entropy backstop** — for the credential that matches no known pattern.
+3. **Seed phrases** — runs of words from the BIP39 English wordlist, redacted as
+   `SEED_PHRASE`. Words may be separated by whitespace, commas, semicolons,
+   hyphens, quotes, backticks or brackets (JSON arrays and code lists match) and
+   optionally numbered. A run of exactly 12, 15, 18, 21 or 24 list words is
+   redacted even if its checksum fails, since one mistyped word leaves a phrase
+   brute-forceable. Inside a longer run, the checksum picks out the phrase; this
+   is what keeps ordinary prose, where many list words are common English, from
+   matching. On a stream, a trailing run of list words is held back until a
+   non-list word ends it, so a phrase is never split across flushes.
+
+4. **High-entropy backstop** — for the credential that matches no known pattern.
    Each whitespace-delimited token that *looks* like an opaque secret (long, and
    either hex or base64-ish) has its Shannon entropy measured; high-entropy tokens
    are flagged. This is what catches your in-house token format without you writing
@@ -87,8 +126,30 @@ Ships in the default build (no extra cargo feature).
 
 ## Performance
 
-On the benchmark corpus, the secret scanner runs at **~1.31M samples/sec** with
-**perfect precision and recall (1.00 / 1.00)**. On detection, `llm-guard`'s
-detect-secrets recalls only 0.45 on the same corpus — it doesn't recognize several of
-the OpenAI / Stripe / labelled `key=value` forms cerberust catches. See
-[benchmarks](../benchmarks.md) for the full table and methodology.
+On the benchmark corpus, the secret scanner runs at **~570k samples/sec** with
+**perfect precision and recall (1.00 / 1.00)**, a little under half the throughput
+before the gitleaks port (1.31M samples/sec). The ratio was measured on one
+machine, before and after, and applied to the published figure. On detection,
+`llm-guard`'s detect-secrets recalls only 0.45 on the same corpus — it doesn't
+recognize several of the OpenAI / Stripe / labelled `key=value` forms cerberust
+catches. See [benchmarks](../benchmarks.md) for the full table and methodology.
+
+Unary scan latency, release build, one machine (0.1.1 → this version):
+
+| Input | 0.1.1 | now |
+|---|---|---|
+| 2 KB of ordinary prompt text | 6 µs | 12 µs |
+| 51 KB negative corpus | 172 µs | 379 µs |
+| 51 KB with every rule keyword repeated throughout | 192 µs | 1.5 ms |
+
+A ported rule's regex runs only when one of its keywords occurs, and then only
+over windows around the keyword hits, widened by the rule's longest possible
+match. The last row is the worst case for that: every rule runs.
+
+The streaming hold-back DFA over all secret patterns is compiled once per pattern
+set and reused across streams, and keeps its state cache across pushes.
+
+`tests/secret_precision.rs` checks the ported rules, Taostats key patterns and
+seed-phrase detector against a corpus of ordinary prompt content (code in several
+languages, logs, stack traces, JSON, prose, hashes, data URIs, SS58 addresses) and
+requires zero detections.
