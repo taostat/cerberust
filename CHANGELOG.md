@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Security
+
+- **`wasm` feature: upgrade `wasmtime` from 44.0.3 to 49.0.1**, fixing
+  RUSTSEC-2026-0222, RUSTSEC-2026-0269 and RUSTSEC-2026-0316.
+
+### Changed
+
+- **Minimum supported Rust version is now 1.96** (was 1.83), the MSRV of
+  wasmtime 49.
+- The `wasm` feature no longer pulls `anyhow` as a direct dependency; wasmtime
+  now uses its own error type.
+
 ## [0.1.1]
 
 ### Fixed
