@@ -90,26 +90,45 @@ fn checksum_ok(indices: &[u16]) -> bool {
 pub(crate) fn detect(text: &str) -> Vec<Span> {
     let mut spans = Vec::new();
     for run in runs(text) {
-        let mut i = 0;
-        while i + LENGTHS[LENGTHS.len() - 1] <= run.len() {
-            let found = LENGTHS.iter().find(|&&len| {
-                i + len <= run.len()
-                    && checksum_ok(&run[i..i + len].iter().map(|w| w.2).collect::<Vec<_>>())
-            });
-            if let Some(&len) = found {
-                spans.push(Span::new(
-                    run[i].0,
-                    run[i + len - 1].1,
-                    "SEED_PHRASE",
-                    CONFIDENCE,
-                ));
-                i += len;
-            } else {
-                i += 1;
-            }
+        for (first, last) in select_windows(&run) {
+            spans.push(Span::new(
+                run[first].0,
+                run[last].1,
+                "SEED_PHRASE",
+                CONFIDENCE,
+            ));
         }
     }
     spans
+}
+
+/// Choose which checksum-valid windows of `run` to redact, as inclusive word
+/// ranges. Words like "seed", "phrase" and "wallet" are on the list, so a phrase
+/// is often preceded by list words, and a window of any length that starts among
+/// them can pass the checksum by chance (1 in 16 to 1 in 256). Picking one window
+/// per region could then leave part of the real phrase unredacted, so every
+/// checksum-valid window is found, across all starts and lengths, and
+/// overlapping windows are redacted as their union. The cost is occasionally
+/// redacting list words adjacent to a phrase.
+fn select_windows(run: &[(usize, usize, u16)]) -> Vec<(usize, usize)> {
+    let indices: Vec<u16> = run.iter().map(|w| w.2).collect();
+    let mut windows: Vec<(usize, usize)> = Vec::new();
+    for &len in &LENGTHS {
+        for first in 0..=indices.len().saturating_sub(len) {
+            if first + len <= indices.len() && checksum_ok(&indices[first..first + len]) {
+                windows.push((first, first + len - 1));
+            }
+        }
+    }
+    windows.sort_unstable();
+    let mut merged: Vec<(usize, usize)> = Vec::new();
+    for (first, last) in windows {
+        match merged.last_mut() {
+            Some(m) if first <= m.1 => m.1 = m.1.max(last),
+            _ => merged.push((first, last)),
+        }
+    }
+    merged
 }
 
 /// Maximal runs of wordlist words joined only by separators, as
@@ -167,6 +186,41 @@ mod tests {
     const ABANDON_12: &str =
         "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about";
     const LEGAL_24: &str = "legal winner thank year wave sausage worth useful legal winner thank year wave sausage worth useful legal winner thank year wave sausage worth title";
+
+    /// Encode `entropy` (16–32 bytes, a multiple of 4) as a BIP39 mnemonic.
+    fn encode(entropy: &[u8]) -> Vec<&'static str> {
+        let hash = Sha256::digest(entropy);
+        let checksum_bits = entropy.len() * 8 / 32;
+        let mut bits: Vec<bool> = entropy
+            .iter()
+            .flat_map(|b| (0..8).rev().map(move |i| (b >> i) & 1 == 1))
+            .collect();
+        bits.extend((0..checksum_bits).map(|i| (hash[i / 8] >> (7 - i % 8)) & 1 == 1));
+        bits.chunks(11)
+            .map(|c| words()[c.iter().fold(0usize, |acc, &b| (acc << 1) | usize::from(b))])
+            .collect()
+    }
+
+    proptest::proptest! {
+        #[test]
+        fn phrase_after_list_word_prefix_is_fully_redacted(
+            words_len in proptest::sample::select(vec![12usize, 15, 18, 21, 24]),
+            seed in proptest::collection::vec(proptest::num::u8::ANY, 32),
+            prefix in proptest::collection::vec(0usize..2048, 0..4),
+        ) {
+            let entropy = &seed[..words_len * 4 / 3];
+            let phrase = encode(entropy).join(" ");
+            let lead: Vec<&str> = prefix.iter().map(|&i| words()[i]).collect();
+            let text = format!("My wallet {} seed phrase: {phrase} thanks", lead.join(" "));
+            let start = text.find(&phrase).unwrap();
+            let end = start + phrase.len();
+            let spans = detect(&text);
+            proptest::prop_assert!(
+                spans.iter().any(|s| s.start <= start && s.end >= end),
+                "phrase not fully covered in {text:?}: {spans:?}"
+            );
+        }
+    }
 
     #[test]
     fn wordlist_is_complete_and_sorted() {
