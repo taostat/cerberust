@@ -89,13 +89,15 @@ Four layers of detection, all emitting spans into the shared redact path:
    `scheme://user:password@host` URL credentials. Here it redacts **just the
    value**, not the label, so `password=hunter2` becomes `password=[REDACTED…]`.
 
-3. **Seed phrases** — 12, 15, 18, 21 or 24 consecutive words from the BIP39
-   English wordlist (whitespace- or comma-separated, optionally numbered) whose
-   checksum is valid, redacted as `SEED_PHRASE`. The checksum keeps ordinary
-   prose — many list words are common English — from matching. Seed phrases are
-   not part of the streaming hold-back (a run of common words has no
-   distinctive prefix): unary scans redact a complete phrase, but a phrase split
-   across an output flush boundary may be partly emitted.
+3. **Seed phrases** — runs of words from the BIP39 English wordlist, redacted as
+   `SEED_PHRASE`. Words may be separated by whitespace, commas, semicolons,
+   hyphens, quotes, backticks or brackets (JSON arrays and code lists match) and
+   optionally numbered. A run of exactly 12, 15, 18, 21 or 24 list words is
+   redacted even if its checksum fails, since one mistyped word leaves a phrase
+   brute-forceable. Inside a longer run, the checksum picks out the phrase; this
+   is what keeps ordinary prose, where many list words are common English, from
+   matching. On a stream, a trailing run of list words is held back until a
+   non-list word ends it, so a phrase is never split across flushes.
 
 4. **High-entropy backstop** — for the credential that matches no known pattern.
    Each whitespace-delimited token that *looks* like an opaque secret (long, and

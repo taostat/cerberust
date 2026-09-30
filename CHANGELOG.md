@@ -17,8 +17,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   allowlists. Generic, identifier, public-key and path-scoped rules are
   excluded (listed with reasons in `EXCLUDED`).
 - **Taostats API keys** (`gm_live_`, `bm_live_`, `ts_live_`, `tao-<uuid>:<sig>`).
-- **BIP39 seed phrases** (12–24 checksum-valid wordlist words), redacted as
-  `SEED_PHRASE`.
+- **BIP39 seed phrases**, redacted as `SEED_PHRASE`: checksum-valid 12–24 word
+  windows, and runs of exactly a mnemonic's length even with a bad checksum.
+  Held back on streams so a phrase is never split.
+- `Scanner::stream_hold_floor`: a scanner can set its own streaming hold point.
+
+### Fixed
+
+- The streaming runner no longer flushes part of a token. A shorter pattern
+  alive inside a longer key could previously flush the key's prefix.
 - A negative corpus and precision test requiring zero detections from the new
   rules on ordinary prompt content.
 
