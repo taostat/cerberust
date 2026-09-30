@@ -151,6 +151,14 @@ pub trait Scanner: Send + Sync {
     fn stream_patterns(&self) -> Vec<String> {
         Vec::new()
     }
+
+    /// The byte offset in the streaming buffer `buf` up to which this scanner
+    /// allows a flush, for matches a regex cannot describe (a run of common
+    /// words validated by checksum). Applied with the DFA and token hold-back;
+    /// the tightest wins. Default `buf.len()`: no extra hold.
+    fn stream_hold_floor(&self, buf: &[u8]) -> usize {
+        buf.len()
+    }
 }
 
 /// A single scanner's content-free metrics for one run: counts and per-entity-
@@ -314,6 +322,16 @@ impl ScannerStack {
             .iter()
             .flat_map(|s| s.stream_patterns())
             .collect()
+    }
+
+    /// The tightest [`Scanner::stream_hold_floor`] across the output scanners.
+    #[must_use]
+    pub fn output_hold_floor(&self, buf: &[u8]) -> usize {
+        self.output
+            .iter()
+            .map(|s| s.stream_hold_floor(buf))
+            .min()
+            .unwrap_or(buf.len())
     }
 
     /// Whether any output scanner declares [`HoldBack::WholeStream`] — it cannot

@@ -152,7 +152,10 @@ impl StreamOutput {
         let mut split = self.dfa.safe_flush_len(buf, false);
         split = split.min(token_boundary_floor(buf));
         split = split.min(sentinel_floor(stack, buf));
-        char_boundary_floor(buf, split)
+        split = split.min(stack.output_hold_floor(buf));
+        // Whatever set the hold point, never flush part of a token: a scanner's
+        // floor may fall inside one (a list word after a digit in a key).
+        whitespace_floor(buf, split)
     }
 }
 
@@ -167,6 +170,19 @@ fn token_boundary_floor(buf: &[u8]) -> usize {
         Some(pos) => pos + 1,
         None => 0,
     }
+}
+
+/// Snap `split` down to just after a whitespace byte (or to 0), so the flushed
+/// prefix ends on a token boundary. Whitespace is ASCII, so this is also a UTF-8
+/// char boundary.
+fn whitespace_floor(buf: &[u8], split: usize) -> usize {
+    if split >= buf.len() {
+        return buf.len();
+    }
+    buf[..split]
+        .iter()
+        .rposition(u8::is_ascii_whitespace)
+        .map_or(0, |pos| pos + 1)
 }
 
 /// Never flush a partial vault sentinel: hold the longest trailing run that is a
@@ -193,17 +209,6 @@ fn sentinel_floor(stack: &ScannerStack, buf: &[u8]) -> usize {
         }
     }
     buf.len()
-}
-
-/// Snap `split` down to the nearest UTF-8 char boundary so a flushed prefix is
-/// always valid UTF-8 and never severs a multi-byte char (whose later bytes
-/// could still be part of a forming match). A boundary is any index where the
-/// byte is not a `10xxxxxx` continuation byte (and the ends of the buffer).
-fn char_boundary_floor(buf: &[u8], mut split: usize) -> usize {
-    while split > 0 && split < buf.len() && buf[split] & 0xC0 == 0x80 {
-        split -= 1;
-    }
-    split
 }
 
 fn blocked(b: &Blocked) -> MiddlewareError {
@@ -238,12 +243,14 @@ mod tests {
     }
 
     #[test]
-    fn char_boundary_snaps_below_a_multibyte_char() {
-        // "a€" is `61 E2 82 AC`; a split landing inside the euro snaps back to 1.
-        let buf = "a€".as_bytes();
-        assert_eq!(char_boundary_floor(buf, 2), 1);
-        assert_eq!(char_boundary_floor(buf, 3), 1);
-        assert_eq!(char_boundary_floor(buf, 1), 1);
-        assert_eq!(char_boundary_floor(buf, 4), 4);
+    fn split_snaps_to_whitespace_and_stays_a_char_boundary() {
+        // "a é bc": é is two bytes; a split inside it or inside "bc" snaps back
+        // to just after a space.
+        let buf = "a \u{e9} bc".as_bytes();
+        assert_eq!(whitespace_floor(buf, 3), 2);
+        assert_eq!(whitespace_floor(buf, 6), 5);
+        assert_eq!(whitespace_floor(buf, 1), 0);
+        assert_eq!(whitespace_floor(buf, buf.len()), buf.len());
+        assert!(std::str::from_utf8(&buf[..whitespace_floor(buf, 3)]).is_ok());
     }
 }

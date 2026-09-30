@@ -557,6 +557,12 @@ fn url_credential_rule() -> &'static Regex {
     RE.get_or_init(|| structured_rule(CREDENTIAL_PATTERNS[1]))
 }
 
+/// The streaming hold point for seed phrases: see `bip39::hold_floor`.
+#[must_use]
+pub fn seed_phrase_hold_floor(buf: &[u8]) -> usize {
+    bip39::hold_floor(buf)
+}
+
 /// Detect credentials: known-vendor patterns (the crate's own plus the ported
 /// gitleaks rules), BIP39 seed phrases, labelled `key=value` secrets,
 /// URL-embedded passwords, and a high-entropy backstop over bare tokens.

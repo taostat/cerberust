@@ -2,16 +2,18 @@
 //!
 //! A mnemonic is 12, 15, 18, 21 or 24 words from the BIP39 English wordlist
 //! whose last word carries a SHA-256 checksum of the rest. Words may be
-//! separated by whitespace or commas and optionally numbered (`1.`, `2)`,
-//! `3:`), as wallets display them. A run of wordlist words is redacted only
-//! where a window of a valid length passes the checksum, which keeps ordinary
-//! prose (many wordlist entries are common English words) from matching.
+//! separated by whitespace, commas, semicolons, hyphens, quotes, backticks or
+//! brackets (so JSON arrays and code lists match), and optionally numbered
+//! (`1.`, `2)`, `3:`), as wallets display them.
 //!
-//! Not part of the streaming hold-back DFA: a phrase is a run of common words
-//! with no distinctive prefix, and holding back every word run would stall all
-//! streamed prose. Unary scans (the input path, and each output flush) redact a
-//! complete phrase; a phrase split across an output flush boundary may be
-//! partially emitted.
+//! A maximal run of list words is redacted whole when its length is exactly a
+//! mnemonic length, even if the checksum fails: a phrase with one mistyped word
+//! is still brute-forceable. Inside a longer run, checksum-valid windows are
+//! redacted (see [`select_windows`]); the checksum is what keeps ordinary prose,
+//! where many list words are common English, from matching.
+//!
+//! On a stream, [`hold_floor`] holds back a trailing run of list words so a
+//! phrase is never split across a flush.
 
 use std::sync::OnceLock;
 
@@ -59,7 +61,12 @@ fn index_of(word: &[u8]) -> Option<u16> {
 /// commas and list numbering (`12.`, `3)`, `4:`).
 fn is_separator(gap: &[u8]) -> bool {
     gap.iter().all(|&b| {
-        b.is_ascii_whitespace() || b.is_ascii_digit() || matches!(b, b',' | b'.' | b')' | b':')
+        b.is_ascii_whitespace()
+            || b.is_ascii_digit()
+            || matches!(
+                b,
+                b',' | b'.' | b')' | b':' | b';' | b'-' | b'"' | b'\'' | b'`' | b'[' | b']'
+            )
     })
 }
 
@@ -111,6 +118,11 @@ pub(crate) fn detect(text: &str) -> Vec<Span> {
 /// overlapping windows are redacted as their union. The cost is occasionally
 /// redacting list words adjacent to a phrase.
 fn select_windows(run: &[(usize, usize, u16)]) -> Vec<(usize, usize)> {
+    // A run of exactly a mnemonic's length is redacted whole even when the
+    // checksum fails: one wrong or mistyped word leaves the rest brute-forceable.
+    if LENGTHS.contains(&run.len()) {
+        return vec![(0, run.len() - 1)];
+    }
     let indices: Vec<u16> = run.iter().map(|w| w.2).collect();
     let mut windows: Vec<(usize, usize)> = Vec::new();
     for &len in &LENGTHS {
@@ -129,6 +141,72 @@ fn select_windows(run: &[(usize, usize, u16)]) -> Vec<(usize, usize)> {
         }
     }
     merged
+}
+
+/// Longest trailing run held on a stream. Twice a mnemonic's length, so a
+/// phrase and any list words after it stay together; a longer run (rare outside
+/// wordlist dumps) is held only back to where no redacted window is split.
+const MAX_HELD_WORDS: usize = 48;
+
+/// The byte offset a streaming runner may flush up to without splitting a
+/// possible seed phrase: the start of the run of list words that reaches the
+/// end of `buf` (a final token touching the end is still forming, so the run
+/// before it counts). `buf.len()` when no such run exists.
+#[must_use]
+pub(crate) fn hold_floor(buf: &[u8]) -> usize {
+    let mut run: Vec<(usize, usize, u16)> = Vec::new();
+    let mut i = 0;
+    while i < buf.len() {
+        if !buf[i].is_ascii_alphabetic() {
+            i += 1;
+            continue;
+        }
+        let start = i;
+        while i < buf.len() && buf[i].is_ascii_alphabetic() {
+            i += 1;
+        }
+        let joined = run
+            .last()
+            .is_some_and(|&(_, end, _)| is_separator(&buf[end..start]));
+        if !joined {
+            run.clear();
+        }
+        if i == buf.len() {
+            // The final token may still grow into a list word: it neither
+            // extends nor breaks the run; the token floor holds it.
+            break;
+        }
+        match index_of(&buf[start..i]) {
+            Some(index) => run.push((start, i, index)),
+            None => run.clear(),
+        }
+    }
+    let Some(&(_, last_end, _)) = run.last() else {
+        return buf.len();
+    };
+    if !is_separator(&buf[last_end..trailing_token_start(buf, last_end)]) {
+        return buf.len();
+    }
+    let mut first = run.len().saturating_sub(MAX_HELD_WORDS);
+    if first > 0 {
+        // Never cut through a window the unary scan would redact.
+        for (w_first, w_last) in select_windows(&run) {
+            if w_first < first && w_last >= first {
+                first = w_first;
+            }
+        }
+    }
+    run[first].0
+}
+
+/// Start of the alphabetic token that ends `buf`, or `buf.len()` if `buf` does
+/// not end in a letter. Bytes from `from` onward are searched.
+fn trailing_token_start(buf: &[u8], from: usize) -> usize {
+    let mut start = buf.len();
+    while start > from && buf[start - 1].is_ascii_alphabetic() {
+        start -= 1;
+    }
+    start
 }
 
 /// Maximal runs of wordlist words joined only by separators, as
@@ -223,6 +301,29 @@ mod tests {
     }
 
     #[test]
+    fn hold_floor_holds_a_trailing_list_word_run() {
+        // "the" is not a list word; the run starts at "abandon".
+        let text = b"see the abandon ability able ";
+        assert_eq!(hold_floor(text), 8);
+        // A still-forming final token does not break the run.
+        assert_eq!(hold_floor(b"see the abandon ability ab"), 8);
+        // A non-list word after the run releases it.
+        assert_eq!(hold_floor(b"abandon ability the "), 20);
+        assert_eq!(hold_floor(b"no list words here "), 19);
+        assert_eq!(hold_floor(b""), 0);
+    }
+
+    #[test]
+    fn hold_floor_never_splits_a_window_in_a_long_run() {
+        // 30 filler list words, then a valid 24-word phrase: 54 words, over the
+        // cap, and the phrase must stay held whole.
+        let filler = "abandon ".repeat(30);
+        let text = format!("x {filler}{LEGAL_24} ");
+        let floor = hold_floor(text.as_bytes());
+        assert!(floor <= text.find(LEGAL_24).unwrap());
+    }
+
+    #[test]
     fn wordlist_is_complete_and_sorted() {
         assert_eq!(words().len(), 2048);
         assert!(words().windows(2).all(|w| w[0] < w[1]));
@@ -250,9 +351,51 @@ mod tests {
     }
 
     #[test]
-    fn bad_checksum_is_not_redacted() {
+    fn exact_length_run_with_a_mistyped_word_is_redacted() {
         let wrong = ABANDON_12.replace("about", "abandon");
-        assert!(detect(&wrong).is_empty());
+        assert_eq!(detect(&wrong).len(), 1);
+        let text = format!("words: {} end", LEGAL_24.replacen("thank", "that", 1));
+        assert_eq!(detect(&text).len(), 1);
+    }
+
+    #[test]
+    fn longer_run_with_bad_checksum_is_not_redacted() {
+        // 13 list words: not a mnemonic length, and no 12-word window passes.
+        let run = format!("abandon {}", ABANDON_12.replace("about", "abandon"));
+        assert!(detect(&run).is_empty());
+    }
+
+    #[test]
+    fn code_and_json_forms_match() {
+        let words: Vec<&str> = ABANDON_12.split(' ').collect();
+        let json = format!(
+            "{{\"mnemonic\": [{}]}}",
+            words
+                .iter()
+                .map(|w| format!("\"{w}\""))
+                .collect::<Vec<_>>()
+                .join(", ")
+        );
+        let python = format!(
+            "seed = [{}]",
+            words
+                .iter()
+                .map(|w| format!("'{w}'"))
+                .collect::<Vec<_>>()
+                .join(", ")
+        );
+        let hyphenated = words.join("-");
+        let backticks = words
+            .iter()
+            .map(|w| format!("`{w}`"))
+            .collect::<Vec<_>>()
+            .join("; ");
+        for text in [json, python, hyphenated, backticks] {
+            let spans = detect(&text);
+            assert_eq!(spans.len(), 1, "{text}");
+            assert!(text[spans[0].start..spans[0].end].starts_with("abandon"));
+            assert!(text[spans[0].start..spans[0].end].ends_with("about"));
+        }
     }
 
     #[test]
