@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.1]
+
 ### Added
 
 - A scaling benchmark for regex, PII, secret and substring redaction, covering
@@ -152,7 +154,8 @@ Initial public release.
 - **Benchmark harness** (`benchmarks/`) — head-to-head precision/recall and
   throughput against Python's `llm-guard` over a shared labelled corpus.
 
-[Unreleased]: https://github.com/taostat/cerberust/compare/v0.2.0...HEAD
+[Unreleased]: https://github.com/taostat/cerberust/compare/v0.2.1...HEAD
+[0.2.1]: https://github.com/taostat/cerberust/compare/v0.2.0...v0.2.1
 [0.2.0]: https://github.com/taostat/cerberust/compare/v0.1.1...v0.2.0
 [0.1.1]: https://github.com/taostat/cerberust/compare/v0.1.0...v0.1.1
 [0.1.0]: https://github.com/taostat/cerberust/releases/tag/v0.1.0
