@@ -18,14 +18,14 @@ cargo deny --all-features check              # advisories, licenses, bans, sourc
 
 `wasm` and `prompt-injection` are off by default so the core library stays lean
 — each pulls a large dependency tree (wasmtime/cranelift; ort/ONNX Runtime,
-tokenizers). The four `prompt-injection` integration tests are `#[ignore]`'d
+tokenizers). The model-loading `prompt-injection` tests are `#[ignore]`'d
 because they load the ~739 MB DeBERTa-v3 weights; CI never runs them. To run
 them locally, fetch the model first:
 
 ```sh
 scripts/fetch-model.sh
 CERBERUST_MODEL_DIR="$HOME/.cache/cerberust/deberta-v3-base-prompt-injection-v2" \
-  cargo test --features prompt-injection --test prompt_injection -- --ignored
+  cargo test --features prompt-injection -- --ignored
 ```
 
 The WASM tests run against committed `.wasm` fixtures, so the WASM toolchain is

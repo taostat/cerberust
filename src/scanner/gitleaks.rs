@@ -362,6 +362,18 @@ mod tests {
     }
 
     #[test]
+    fn every_rule_match_consumes_at_least_one_byte() {
+        for rule in RULES {
+            let hir = regex_automata::util::syntax::parse(rule.regex).expect("rule regex parses");
+            assert!(
+                hir.properties().minimum_len().is_some_and(|len| len > 0),
+                "{} can match the empty string",
+                rule.id
+            );
+        }
+    }
+
+    #[test]
     fn every_allowlist_regex_compiles() {
         // `compile_all` drops a regex that fails to compile; none may.
         for rule in RULES {
