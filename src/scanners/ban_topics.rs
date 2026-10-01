@@ -69,7 +69,10 @@ fn contains_word(haystack: &str, keyword: &str) -> bool {
         if left_ok && right_ok {
             return true;
         }
-        from = start + 1;
+        // `start` is a character boundary because `find` returned a match.
+        // Advance by the first character's byte width so overlapping matches
+        // are still considered without slicing inside a UTF-8 codepoint.
+        from = start + haystack[start..].chars().next().map_or(1, char::len_utf8);
     }
     false
 }
@@ -199,6 +202,92 @@ mod tests {
         // "class" must not trip the "ass" keyword.
         assert!(scanner.scan("the class begins", &mut ctx).unwrap().valid);
         assert!(!scanner.scan("what an ass", &mut ctx).unwrap().valid);
+    }
+
+    #[test]
+    fn retries_utf8_keyword_after_failed_word_boundary() {
+        let scanner = BanTopicsScanner::new([Topic::new("ban", ["élan".to_owned()])]);
+        let mut ctx = ScanCtx::new();
+        assert!(!contains_word("xélan", "élan"));
+        assert!(!scanner.scan("xélan élan", &mut ctx).unwrap().valid);
+    }
+
+    #[test]
+    fn retries_three_byte_keyword_after_failed_word_boundary() {
+        let scanner = BanTopicsScanner::new([Topic::new("ban", ["漢語".to_owned()])]);
+        let mut ctx = ScanCtx::new();
+        assert!(!contains_word("x漢語", "漢語"));
+        assert!(!scanner.scan("x漢語 漢語", &mut ctx).unwrap().valid);
+    }
+
+    #[test]
+    fn retries_four_byte_keyword_after_failed_word_boundary() {
+        let scanner = BanTopicsScanner::new([Topic::new("ban", ["😀topic".to_owned()])]);
+        let mut ctx = ScanCtx::new();
+        assert!(!contains_word("x😀topic", "😀topic"));
+        assert!(!scanner.scan("x😀topic 😀topic", &mut ctx).unwrap().valid);
+    }
+
+    #[test]
+    fn unicode_keywords_retry_both_boundaries_and_preserve_overlaps() {
+        // Include a single final codepoint, internal multibyte characters, and
+        // a combining mark, as well as each multibyte leading width.
+        for keyword in ["é", "élan", "漢", "漢語", "😀", "😀topic", "aé", "e\u{301}"] {
+            for (text, expected) in [
+                (String::new(), false),
+                (keyword.to_owned(), true),
+                (format!("({keyword})"), true),
+                (format!("{keyword}x"), false),
+                (format!("x{keyword}x"), false),
+                (format!("{keyword}x {keyword}"), true),
+                (format!("x{keyword}x {keyword}"), true),
+                (format!("x{keyword} {keyword}x x{keyword}"), false),
+            ] {
+                assert_eq!(
+                    contains_word(&text, keyword),
+                    expected,
+                    "{text:?}, {keyword:?}"
+                );
+            }
+            let overlapping = format!("{keyword} {keyword}");
+            assert!(contains_word(
+                &format!("x{keyword} {keyword} {keyword}"),
+                &overlapping,
+            ));
+        }
+    }
+
+    #[test]
+    fn word_boundaries_keep_ascii_byte_semantics() {
+        // Every ASCII neighbor, and representative Unicode letters, digits,
+        // marks and symbols: non-ASCII bytes remain non-word boundaries.
+        for neighbor in (0..=127)
+            .map(char::from)
+            .chain(['é', '漢', '😀', '\u{301}', '９'])
+        {
+            let expected = !(neighbor.is_ascii_alphanumeric() || neighbor == '_');
+            for keyword in ["word", "élan", "漢語", "😀topic"] {
+                assert_eq!(
+                    contains_word(&format!("{neighbor}{keyword}"), keyword),
+                    expected
+                );
+                assert_eq!(
+                    contains_word(&format!("{keyword}{neighbor}"), keyword),
+                    expected
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn empty_keywords_are_ignored_and_unicode_case_is_preserved() {
+        let scanner = BanTopicsScanner::new([Topic::new("ban", [String::new()])]);
+        for text in ["", "x", "é", "漢", "😀"] {
+            assert_eq!(scanner.matched_topic(text), None);
+        }
+        let scanner = BanTopicsScanner::new([Topic::new("主题😀", ["ÉLAN".to_owned()])]);
+        assert_eq!(scanner.matched_topic("Élan"), Some("主题😀"));
+        assert_eq!(scanner.matched_topic("élan"), None);
     }
 
     #[test]

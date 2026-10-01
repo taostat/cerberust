@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- `BanTopicsScanner` no longer panics after rejecting a match at either ASCII
+  word boundary for a keyword beginning with a multi-byte UTF-8 character,
+  even when no later match exists (for example, `élan` in `xélan` or `élanx`).
+
 ## [0.2.0]
 
 ### Security

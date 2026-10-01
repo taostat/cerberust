@@ -40,7 +40,7 @@ jobs:
 
   # Optional-feature build/test. Split out because `wasm` (wasmtime/cranelift)
   # and `prompt-injection` (ort/ONNX Runtime, tokenizers) pull large native
-  # dependency trees. The four model-loading integration tests are `#[ignore]`'d
+  # dependency trees. The model-loading integration tests are `#[ignore]`'d
   # and stay unrun here — CI never downloads the 739MB DeBERTa-v3 weights.
   features:
     name: test (wasm + prompt-injection)
