@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- A scaling benchmark for regex, PII, secret and substring redaction, covering
+  dense and isolated matches across 8–128 KiB inputs (`cargo bench --bench scaling`).
+
 ### Fixed
 
 - `BanTopicsScanner` no longer panics after rejecting a match at either ASCII
