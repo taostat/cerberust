@@ -206,6 +206,57 @@ fn split_international_phone_is_fully_redacted_across_chunks() {
     }
 }
 
+fn pii_output_stack() -> ScannerStack {
+    let scanners: Vec<Box<dyn Scanner>> = vec![Box::new(PiiScanner::sensitive_output())];
+    ScannerStack::new(scanners, true)
+}
+
+fn assert_pii_stream_equals_unary(response: &str, chunk_len: usize) {
+    let unary = pii_output_stack().run_output(response).unwrap();
+    let streamed = run_chunked(&mut pii_output_stack(), response, chunk_len, |_| {});
+    assert_eq!(
+        normalize_nonces(&streamed),
+        normalize_nonces(&unary),
+        "stream != unary for {response:?} at chunk_len {chunk_len}",
+    );
+}
+
+#[test]
+fn phone_candidates_stream_like_unary() {
+    // A rejected over-long `+` run must not be flushed group by group, where a
+    // first group alone would pass the digit-count check and be redacted.
+    for response in [
+        "id **+12345678 90123456** end",
+        "id +1234 5678 9012 3456. end",
+        "call +44 7700 900123, ok",
+        "+447700900123 555-123-4567 done",
+    ] {
+        for chunk_len in 1..=8 {
+            assert_pii_stream_equals_unary(response, chunk_len);
+        }
+    }
+}
+
+#[test]
+fn overlong_plus_run_hold_back_is_bounded() {
+    // A `+` run past 15 digits is rejected whatever follows, so the runner may
+    // flush it and must not buffer (and rescan) the whole run until it ends.
+    let response = format!("+{}end", "0 ".repeat(1000));
+    let mut stack = pii_output_stack();
+    let mut runner = StreamOutput::new(&stack);
+    let mut emitted = 0;
+    for (pushed, ch) in response.char_indices() {
+        emitted += runner.push(&mut stack, &ch.to_string()).unwrap().len();
+        assert!(
+            pushed + 1 - emitted <= 64,
+            "holding {} bytes",
+            pushed + 1 - emitted
+        );
+    }
+    let tail = runner.finish(&mut stack).unwrap();
+    assert!(!tail.contains("[REDACTED"), "{tail:?}");
+}
+
 #[test]
 fn whole_stream_scanner_buffers_then_passes_clean() {
     // A blocking ban-topics scanner declares WholeStream: the runner emits
@@ -404,6 +455,18 @@ proptest::proptest! {
         let mut stream_stack = output_secret_stack();
         let streamed = run_chunked(&mut stream_stack, &response, chunk_len, |_| {});
 
+        proptest::prop_assert_eq!(normalize_nonces(&streamed), normalize_nonces(&unary));
+    }
+
+    /// For any chunking of text built from digits, phone separators and
+    /// punctuation, PII streaming output equals the unary `run_output`.
+    #[test]
+    fn prop_phone_streaming_equals_unary(
+        response in "[+0-9 .*a-]{0,40}",
+        chunk_len in 1usize..=8,
+    ) {
+        let unary = pii_output_stack().run_output(&response).unwrap();
+        let streamed = run_chunked(&mut pii_output_stack(), &response, chunk_len, |_| {});
         proptest::prop_assert_eq!(normalize_nonces(&streamed), normalize_nonces(&unary));
     }
 

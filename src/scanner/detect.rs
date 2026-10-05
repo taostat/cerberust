@@ -110,7 +110,7 @@ fn never_match() -> &'static Regex {
 /// The structured-PII source patterns, the single source both the compiled
 /// detector regexes and the streaming hold-back DFA read. Order matches the
 /// fields of [`StructuredRules`].
-const STRUCTURED_PATTERNS: [&str; 7] = [
+const STRUCTURED_PATTERNS: [&str; 6] = [
     r"[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,}",
     r"(?:\+?\d{1,3}[\s.\-]?)?(?:\(\d{3}\)|\d{3})[\s.\-]\d{3}[\s.\-]\d{4}\b",
     r"\b\d{3}-\d{2}-\d{4}\b",
@@ -128,23 +128,35 @@ const STRUCTURED_PATTERNS: [&str; 7] = [
     // length, then mod-97, trimming trailing groups until a valid IBAN is found
     // or the candidate is rejected — so an overrun never produces a redaction.
     r"\b[A-Za-z]{2}\d{2}(?:[ ]?[A-Za-z0-9]){11,32}\b",
-    // Candidate international phone numbers: `+` then a digit run in any
-    // grouping the country uses (`+44 7700 900123`, `+33 1 23 45 67 89`). The
-    // run is unbounded so the whole grouped value is one candidate;
-    // `e164_digits_ok` then requires 7–15 digits across all of it, so an
-    // over-long grouped identifier is rejected rather than redacted by prefix.
-    // Separators sit between digits and exclude newlines, so the match never
-    // swallows trailing whitespace or a number on the next line.
-    r"\+\d(?:[ .\-]?\d)*",
 ];
+
+/// Candidate international phone numbers: `+` then an ASCII digit run in any
+/// grouping the country uses (`+44 7700 900123`, `+33 1 23 45 67 89`). The run
+/// is unbounded so the whole grouped value is one candidate; `e164_digits_ok`
+/// then requires 7–15 digits across all of it, so an over-long grouped
+/// identifier is rejected rather than redacted by prefix. Separators sit between
+/// digits and exclude newlines, so the match never swallows trailing whitespace
+/// or a number on the next line.
+const INTL_PHONE_PATTERN: &str = r"\+[0-9](?:[ .\-]?[0-9])*";
+
+/// The streaming hold-back form of [`INTL_PHONE_PATTERN`]. The runner flushes at
+/// the last whitespace, which may fall between a run's groups; flushing there
+/// would let the unary scan accept a first group whose whole run it rejects. So
+/// the run stays live through the rest of its token, and the runner holds from
+/// `+` until whitespace ends that token. The digits are capped at 16 — one past
+/// the E.164 maximum decides rejection — so an endless run is flushed in pieces,
+/// none of which starts with `+`, rather than held whole.
+const INTL_PHONE_HOLD_PATTERN: &str = r"\+[0-9](?:[ .\-]?[0-9]){0,15}[^ \t\n\r\x0C]*";
 
 /// The structured-PII detector patterns as DFA hold-back source strings.
 #[must_use]
 pub fn structured_pattern_sources() -> Vec<String> {
-    STRUCTURED_PATTERNS
+    let mut sources: Vec<String> = STRUCTURED_PATTERNS
         .iter()
         .map(|p| (*p).to_owned())
-        .collect()
+        .collect();
+    sources.push(INTL_PHONE_HOLD_PATTERN.to_owned());
+    sources
 }
 
 struct StructuredRules {
@@ -166,7 +178,7 @@ fn structured_rules() -> &'static StructuredRules {
         ip: structured_rule(STRUCTURED_PATTERNS[3]),
         digits: structured_rule(STRUCTURED_PATTERNS[4]),
         iban: structured_rule(STRUCTURED_PATTERNS[5]),
-        intl_phone: structured_rule(STRUCTURED_PATTERNS[6]),
+        intl_phone: structured_rule(INTL_PHONE_PATTERN),
     })
 }
 
@@ -777,6 +789,14 @@ mod tests {
         assert_eq!(phones("Paris +33 1 23 45 67 89"), ["+33 1 23 45 67 89"]);
         assert_eq!(phones("Berlin +49-30-1234567"), ["+49-30-1234567"]);
         assert_eq!(phones("US +1 555 123 4567"), ["+1 555 123 4567"]);
+    }
+
+    #[test]
+    fn international_phone_counts_only_ascii_digits() {
+        // Full-width digits are not part of the candidate, so they neither pad
+        // a short run past the limit nor form a number on their own.
+        assert_eq!(phones("+1234567８９０"), ["+1234567"]);
+        assert_eq!(phones("+４４７７００９００１２３"), Vec::<&str>::new());
     }
 
     #[test]
