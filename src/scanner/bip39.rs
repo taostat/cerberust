@@ -398,7 +398,7 @@ mod tests {
     fn longer_run_with_bad_checksum_is_not_redacted() {
         // 13 list words: not a mnemonic length, and no 12-word window passes.
         let run = format!("abandon {}", ABANDON_12.replace("about", "abandon"));
-        assert!(detect(&run).is_empty());
+        assert_eq!(detect(&run), []);
     }
 
     #[test]
@@ -437,9 +437,9 @@ mod tests {
     #[test]
     fn short_or_interrupted_runs_do_not_match() {
         let eleven = ABANDON_12.rsplit_once(' ').unwrap().0;
-        assert!(detect(eleven).is_empty());
+        assert_eq!(detect(eleven), []);
         let interrupted = ABANDON_12.replacen("abandon abandon", "abandon the abandon", 1);
-        assert!(detect(&interrupted).is_empty());
-        assert!(detect("").is_empty());
+        assert_eq!(detect(&interrupted), []);
+        assert_eq!(detect(""), []);
     }
 }

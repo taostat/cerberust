@@ -202,7 +202,7 @@ mod tests {
 
     fn ticket_scanner() -> RegexScanner {
         let (scanner, errors) = RegexScanner::from_patterns([(r"TICKET-\d+", "TICKET_ID")]);
-        assert!(errors.is_empty());
+        assert!(errors.is_empty(), "{errors:?}");
         scanner
     }
 
@@ -276,7 +276,7 @@ mod tests {
         // `regex` crate is backtracking-free, so this both compiles and runs in
         // linear time over an adversarial input.
         let (scanner, errors) = RegexScanner::from_patterns([(r"(a+)+$", "EVIL")]);
-        assert!(errors.is_empty());
+        assert!(errors.is_empty(), "{errors:?}");
         let mut ctx = ScanCtx::new();
         let adversarial = format!("{}!", "a".repeat(50_000));
         let start = Instant::now();

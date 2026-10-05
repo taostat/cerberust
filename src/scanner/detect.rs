@@ -786,10 +786,10 @@ mod tests {
 
     #[test]
     fn international_phone_rejects_wrong_digit_count_whole_candidate() {
-        assert!(phones("score +123456").is_empty());
-        assert!(phones("id +1234567890123456").is_empty());
+        assert_eq!(phones("score +123456"), Vec::<&str>::new());
+        assert_eq!(phones("id +1234567890123456"), Vec::<&str>::new());
         // 16 digits in groups: no 15-digit prefix is redacted either.
-        assert!(phones("id +1234 5678 9012 3456").is_empty());
+        assert_eq!(phones("id +1234 5678 9012 3456"), Vec::<&str>::new());
     }
 
     #[test]

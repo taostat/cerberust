@@ -312,7 +312,7 @@ mod tests {
     fn substitute_counting_omits_unmatched_sentinels() {
         let s = subber(&[("[REDACTED_EMAIL_1_abcd1234]", "alice@x.com")]);
         let (_text, counts) = s.substitute_counting("no sentinel here");
-        assert!(counts.is_empty());
+        assert!(counts.is_empty(), "{counts:?}");
     }
 
     #[test]

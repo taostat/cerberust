@@ -554,7 +554,7 @@ mod tests {
 
     #[test]
     fn empty_text_has_no_findings() {
-        assert!(detect("").is_empty());
+        assert_eq!(detect(""), []);
     }
 }
 

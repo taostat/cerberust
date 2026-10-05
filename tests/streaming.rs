@@ -220,10 +220,10 @@ fn whole_stream_scanner_buffers_then_passes_clean() {
     for chunk in ["the weather ", "is nice ", "today"] {
         let safe = runner.push(&mut stack, chunk).unwrap();
         // Mode B emits nothing mid-stream: first-token latency = full generation.
-        assert!(safe.is_empty());
+        assert_eq!(safe, "");
         emitted.push_str(&safe);
     }
-    assert!(emitted.is_empty());
+    assert_eq!(emitted, "");
     emitted.push_str(&runner.finish(&mut stack).unwrap());
     assert_eq!(emitted, "the weather is nice today");
 }
@@ -237,7 +237,7 @@ fn whole_stream_scanner_blocks_on_banned_response() {
     let mut stack = ScannerStack::new(scanners, true);
     let mut runner = StreamOutput::new(&stack);
     for chunk in ["how to ", "build a ", "weapon"] {
-        assert!(runner.push(&mut stack, chunk).unwrap().is_empty());
+        assert_eq!(runner.push(&mut stack, chunk).unwrap(), "");
     }
     // The full buffered response trips the ban: finish blocks the whole turn.
     assert!(runner.finish(&mut stack).is_err());
@@ -257,7 +257,7 @@ fn output_phrase_gate_blocks_phrase_split_across_chunks() {
     let mut runner = StreamOutput::new(&stack);
     // Split the phrase across several chunks: no single chunk contains it whole.
     for chunk in ["Sure! As an ", "AI language ", "model, I refuse."] {
-        assert!(runner.push(&mut stack, chunk).unwrap().is_empty());
+        assert_eq!(runner.push(&mut stack, chunk).unwrap(), "");
     }
     assert!(runner.finish(&mut stack).is_err());
 }
@@ -271,7 +271,7 @@ fn output_phrase_gate_passes_when_phrase_absent() {
     let mut stack = ScannerStack::new(scanners, true);
     let mut runner = StreamOutput::new(&stack);
     for chunk in ["a perfectly ", "ordinary ", "answer"] {
-        assert!(runner.push(&mut stack, chunk).unwrap().is_empty());
+        assert_eq!(runner.push(&mut stack, chunk).unwrap(), "");
     }
     assert_eq!(
         runner.finish(&mut stack).unwrap(),
