@@ -17,8 +17,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   then saw only fragments, so a spaced card (`4111 1111 1111 1111` followed by
   a newline and a digit) streamed through unredacted. The runner now moves its
   split back to the start of any completed match that crosses it, following
-  each pattern's own non-overlapping matches as the unary detectors do.
-  Streaming is ~15–35% slower on dense-PII output.
+  each pattern's own non-overlapping matches as the unary detectors do. The
+  check shares the hold-back DFA's existing pass over the buffer; streaming
+  throughput on a dense PII/secret benchmark is within ~5% of 0.2.1.
 
 ### Fixed
 

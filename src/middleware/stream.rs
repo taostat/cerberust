@@ -149,7 +149,8 @@ impl StreamOutput {
         if at_eof {
             return buf.len();
         }
-        let mut split = self.dfa.safe_flush_len(buf, false);
+        let hold = self.dfa.scan(buf);
+        let mut split = hold.flush_len();
         split = split.min(token_boundary_floor(buf));
         split = split.min(sentinel_floor(stack, buf));
         split = split.min(stack.output_hold_floor(buf));
@@ -158,7 +159,7 @@ impl StreamOutput {
         split = whitespace_floor(buf, split);
         // Nor part of a completed match: the unary scan must see it whole. Each
         // step moves the split strictly earlier, so this terminates.
-        while let Some(start) = self.dfa.straddling_match_start(buf, split) {
+        while let Some(start) = hold.straddling_start(split) {
             split = whitespace_floor(buf, start);
         }
         split
