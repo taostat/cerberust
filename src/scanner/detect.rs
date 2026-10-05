@@ -110,14 +110,9 @@ fn never_match() -> &'static Regex {
 /// The structured-PII source patterns, the single source both the compiled
 /// detector regexes and the streaming hold-back DFA read. Order matches the
 /// fields of [`StructuredRules`].
-const STRUCTURED_PATTERNS: [&str; 6] = [
+const STRUCTURED_PATTERNS: [&str; 7] = [
     r"[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,}",
-    // Phone: NANP 3-3-4 grouping (optional country code), or any `+`-prefixed
-    // E.164 number of 7–15 digits in whatever grouping the country uses
-    // (`+44 7700 900123`, `+33 1 23 45 67 89`). The E.164 separators sit
-    // between digits and exclude newlines, so the match never swallows trailing
-    // whitespace or a number on the next line.
-    r"(?:\+?\d{1,3}[\s.\-]?)?(?:\(\d{3}\)|\d{3})[\s.\-]\d{3}[\s.\-]\d{4}\b|\+\d(?:[ .\-]?\d){6,14}\b",
+    r"(?:\+?\d{1,3}[\s.\-]?)?(?:\(\d{3}\)|\d{3})[\s.\-]\d{3}[\s.\-]\d{4}\b",
     r"\b\d{3}-\d{2}-\d{4}\b",
     r"\b(?:\d{1,3}\.){3}\d{1,3}\b",
     // Candidate card numbers: 13–19 digits, optionally space/hyphen grouped.
@@ -133,6 +128,14 @@ const STRUCTURED_PATTERNS: [&str; 6] = [
     // length, then mod-97, trimming trailing groups until a valid IBAN is found
     // or the candidate is rejected — so an overrun never produces a redaction.
     r"\b[A-Za-z]{2}\d{2}(?:[ ]?[A-Za-z0-9]){11,32}\b",
+    // Candidate international phone numbers: `+` then a digit run in any
+    // grouping the country uses (`+44 7700 900123`, `+33 1 23 45 67 89`). The
+    // run is unbounded so the whole grouped value is one candidate;
+    // `e164_digits_ok` then requires 7–15 digits across all of it, so an
+    // over-long grouped identifier is rejected rather than redacted by prefix.
+    // Separators sit between digits and exclude newlines, so the match never
+    // swallows trailing whitespace or a number on the next line.
+    r"\+\d(?:[ .\-]?\d)*",
 ];
 
 /// The structured-PII detector patterns as DFA hold-back source strings.
@@ -147,6 +150,7 @@ pub fn structured_pattern_sources() -> Vec<String> {
 struct StructuredRules {
     email: Regex,
     phone: Regex,
+    intl_phone: Regex,
     ssn: Regex,
     ip: Regex,
     digits: Regex,
@@ -162,6 +166,7 @@ fn structured_rules() -> &'static StructuredRules {
         ip: structured_rule(STRUCTURED_PATTERNS[3]),
         digits: structured_rule(STRUCTURED_PATTERNS[4]),
         iban: structured_rule(STRUCTURED_PATTERNS[5]),
+        intl_phone: structured_rule(STRUCTURED_PATTERNS[6]),
     })
 }
 
@@ -179,6 +184,11 @@ pub fn detect_structured(text: &str) -> Vec<Span> {
     }
     for m in r.phone.find_iter(text) {
         spans.push(Span::new(m.start(), m.end(), "PHONE", 0.85));
+    }
+    for m in r.intl_phone.find_iter(text) {
+        if e164_digits_ok(m.as_str()) {
+            spans.push(Span::new(m.start(), m.end(), "PHONE", 0.85));
+        }
     }
     for m in r.ssn.find_iter(text) {
         spans.push(Span::new(m.start(), m.end(), "US_SSN", 0.9));
@@ -200,6 +210,13 @@ pub fn detect_structured(text: &str) -> Vec<Span> {
         }
     }
     spans
+}
+
+/// E.164 allows at most 15 digits including the country code; fewer than 7
+/// is too short to be a dialable international number.
+fn e164_digits_ok(candidate: &str) -> bool {
+    let digits = candidate.bytes().filter(u8::is_ascii_digit).count();
+    (7..=15).contains(&digits)
 }
 
 fn is_valid_ipv4(s: &str) -> bool {
@@ -745,7 +762,7 @@ mod tests {
 
     fn phones(text: &str) -> Vec<&str> {
         let mut found = Vec::new();
-        for s in detect_structured(text) {
+        for s in resolve_overlaps(detect_structured(text)) {
             if s.ty == "PHONE" {
                 found.push(&text[s.start..s.end]);
             }
@@ -763,11 +780,31 @@ mod tests {
     }
 
     #[test]
-    fn international_phone_stops_at_line_end_and_digit_limit() {
+    fn international_phone_stops_at_line_end() {
         assert_eq!(phones("+44 7700 900123\n2024"), ["+44 7700 900123"]);
-        // Too short for E.164 (6 digits) and too long (16 digits).
+    }
+
+    #[test]
+    fn international_phone_rejects_wrong_digit_count_whole_candidate() {
         assert!(phones("score +123456").is_empty());
         assert!(phones("id +1234567890123456").is_empty());
+        // 16 digits in groups: no 15-digit prefix is redacted either.
+        assert!(phones("id +1234 5678 9012 3456").is_empty());
+    }
+
+    #[test]
+    fn international_candidate_does_not_hide_a_us_number() {
+        // The `+` run is rejected (23 digits) but must not stop the NANP rule
+        // from covering the US number it overlaps, as it did before.
+        let text = "+447700900123 555-123-4567";
+        let us_start = text.len() - "555-123-4567".len();
+        let spans = resolve_overlaps(detect_structured(text));
+        for byte in us_start..text.len() {
+            assert!(
+                spans.iter().any(|s| s.start <= byte && byte < s.end),
+                "byte {byte}"
+            );
+        }
     }
 
     #[test]

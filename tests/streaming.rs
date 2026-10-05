@@ -187,6 +187,26 @@ fn split_iban_is_fully_redacted_across_chunks() {
 }
 
 #[test]
+fn split_international_phone_is_fully_redacted_across_chunks() {
+    // A spaced `+44` number straddles chunk boundaries; the hold-back DFA must
+    // buffer the whole digit run so no group of it is emitted before redaction.
+    let response = "call +44 7700 900123 today";
+    for chunk_len in 1..=7 {
+        let scanners: Vec<Box<dyn Scanner>> = vec![Box::new(PiiScanner::sensitive_output())];
+        let mut stack = ScannerStack::new(scanners, true);
+        let emitted = stream_collect(&mut stack, response, chunk_len);
+        for group in ["7700", "900123"] {
+            assert!(
+                !emitted.contains(group),
+                "leaked {group} at chunk_len {chunk_len}: {emitted:?}"
+            );
+        }
+        assert!(emitted.starts_with("call [REDACTED_PHONE_1_"));
+        assert!(emitted.ends_with(" today"));
+    }
+}
+
+#[test]
 fn whole_stream_scanner_buffers_then_passes_clean() {
     // A blocking ban-topics scanner declares WholeStream: the runner emits
     // nothing until finish, then passes a clean response through whole.
