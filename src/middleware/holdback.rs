@@ -25,13 +25,28 @@
 //! PEM `[\s\S]*?` body) keeps every interior start live, so the runner holds
 //! from the secret's first byte until the match provably completes or dies.
 //!
+//! # Completed matches are flushed whole
+//!
+//! A match that has already completed is not live, but the hold point another
+//! pattern sets (or the last whitespace) can still fall inside it: a spaced
+//! card followed by `\n5` leaves a phone pattern live from the card's last
+//! group. Flushing there hands the unary scan a fragment it does not recognise,
+//! and the card leaks. [`HoldBackDfa::straddling_match_start`] finds such a
+//! match so the runner moves the split back to its start. It follows each
+//! pattern's own non-overlapping matches, as each unary detector's `find_iter`
+//! does — overlapping candidates of one pattern (a card candidate at every digit
+//! of a long run) would otherwise chain the split back to the buffer start.
+//!
 //! [`stream_patterns`]: crate::Scanner::stream_patterns
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, OnceLock};
 
 use regex_automata::{
-    hybrid::dfa::{Cache, DFA},
+    hybrid::{
+        dfa::{Cache, DFA},
+        LazyStateID,
+    },
     util::start::Config as StartConfig,
     Anchored, MatchKind,
 };
@@ -172,6 +187,102 @@ impl HoldBackDfa {
             }
         }
         buf.len()
+    }
+
+    /// The start of the earliest complete match that begins before `split` and
+    /// ends after it, if any; the runner moves its split back to it.
+    ///
+    /// Matches are followed per pattern, left to right and non-overlapping, so a
+    /// pattern's candidate that starts inside its own earlier candidate is
+    /// skipped, as the unary `find_iter` skips it. Where the lazy DFA cannot
+    /// decide (a cache failure) the start counts as straddling — hold.
+    #[must_use]
+    pub fn straddling_match_start(&self, buf: &[u8], split: usize) -> Option<usize> {
+        if self.empty || split >= buf.len() {
+            return None;
+        }
+        let mut guard = self.cache.lock().unwrap_or_else(|poisoned| {
+            let mut guard = poisoned.into_inner();
+            *guard = self.dfa.create_cache();
+            guard
+        });
+        // Per pattern: the offset its previous match ended at.
+        let mut free_from = vec![0usize; self.dfa.pattern_len()];
+        let mut ends = Vec::new();
+        for s in 0..split {
+            let before = s.checked_sub(1).map(|i| buf[i]);
+            if !self.match_ends(&mut guard, buf, s, before, &mut ends) {
+                return Some(s);
+            }
+            for &(pattern, end) in &ends {
+                if s < free_from[pattern] {
+                    continue;
+                }
+                if end > split {
+                    return Some(s);
+                }
+                free_from[pattern] = end;
+            }
+        }
+        None
+    }
+
+    /// Fill `ends` with `(pattern index, longest match end)` for each pattern
+    /// with a non-empty anchored match starting at `start`. Returns `false` when
+    /// the lazy DFA cannot decide.
+    fn match_ends(
+        &self,
+        cache: &mut Cache,
+        buf: &[u8],
+        start: usize,
+        before: Option<u8>,
+        ends: &mut Vec<(usize, usize)>,
+    ) -> bool {
+        ends.clear();
+        let config = StartConfig::new()
+            .anchored(Anchored::Yes)
+            .look_behind(before);
+        let Ok(mut state) = self.dfa.start_state(cache, &config) else {
+            return false;
+        };
+        // Lazy-DFA matches are reported one byte late: a match state reached
+        // after feeding `buf[at]` is a match ending at `at`.
+        for (at, &b) in buf.iter().enumerate().skip(start) {
+            let Ok(next) = self.dfa.next_state(cache, state, b) else {
+                return false;
+            };
+            state = next;
+            self.record_match(cache, state, at, ends);
+            if state.is_dead() {
+                return true;
+            }
+        }
+        let Ok(eoi) = self.dfa.next_eoi_state(cache, state) else {
+            return false;
+        };
+        self.record_match(cache, eoi, buf.len(), ends);
+        true
+    }
+
+    /// Record `end` for every pattern `state` matches; later (longer) ends
+    /// overwrite earlier ones.
+    fn record_match(
+        &self,
+        cache: &Cache,
+        state: LazyStateID,
+        end: usize,
+        ends: &mut Vec<(usize, usize)>,
+    ) {
+        if !state.is_match() {
+            return;
+        }
+        for i in 0..self.dfa.match_len(cache, state) {
+            let pattern = self.dfa.match_pattern(cache, state, i).as_usize();
+            match ends.iter_mut().find(|(p, _)| *p == pattern) {
+                Some(slot) => slot.1 = end,
+                None => ends.push((pattern, end)),
+            }
+        }
     }
 
     /// Whether feeding `tail` into the anchored DFA from the start state leaves

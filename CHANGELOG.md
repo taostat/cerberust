@@ -9,6 +9,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [0.2.2]
 
+### Security
+
+- **The streaming output runner no longer flushes a completed match in
+  pieces.** When another pattern was still live from one of a match's later
+  groups, the runner could flush at a point inside the match; the unary scan
+  then saw only fragments, so a spaced card (`4111 1111 1111 1111` followed by
+  a newline and a digit) streamed through unredacted. The runner now moves its
+  split back to the start of any completed match that crosses it, following
+  each pattern's own non-overlapping matches as the unary detectors do.
+  Streaming is ~15–35% slower on dense-PII output.
+
 ### Fixed
 
 - `PiiScanner` now detects `+`-prefixed international phone numbers of 7–15

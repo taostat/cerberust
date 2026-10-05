@@ -139,14 +139,12 @@ const STRUCTURED_PATTERNS: [&str; 6] = [
 /// or a number on the next line.
 const INTL_PHONE_PATTERN: &str = r"\+[0-9](?:[ .\-]?[0-9])*";
 
-/// The streaming hold-back form of [`INTL_PHONE_PATTERN`]. The runner flushes at
-/// the last whitespace, which may fall between a run's groups; flushing there
-/// would let the unary scan accept a first group whose whole run it rejects. So
-/// the run stays live through the rest of its token, and the runner holds from
-/// `+` until whitespace ends that token. The digits are capped at 16 — one past
-/// the E.164 maximum decides rejection — so an endless run is flushed in pieces,
-/// none of which starts with `+`, rather than held whole.
-const INTL_PHONE_HOLD_PATTERN: &str = r"\+[0-9](?:[ .\-]?[0-9]){0,15}[^ \t\n\r\x0C]*";
+/// The streaming hold-back form of [`INTL_PHONE_PATTERN`], capped at 16 digits:
+/// one past the E.164 maximum decides rejection, so an endless run is flushed in
+/// pieces — none of which starts with `+`, so none is a candidate — rather than
+/// held whole. The runner never splits a completed match, so the flushed piece
+/// carries all 16 digits and is rejected, as the unary scan rejects the run.
+const INTL_PHONE_HOLD_PATTERN: &str = r"\+[0-9](?:[ .\-]?[0-9]){0,15}";
 
 /// The structured-PII detector patterns as DFA hold-back source strings.
 #[must_use]

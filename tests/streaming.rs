@@ -222,10 +222,16 @@ fn assert_pii_stream_equals_unary(response: &str, chunk_len: usize) {
 }
 
 #[test]
-fn phone_candidates_stream_like_unary() {
-    // A rejected over-long `+` run must not be flushed group by group, where a
-    // first group alone would pass the digit-count check and be redacted.
+fn completed_matches_stream_like_unary() {
+    // A completed match must not be flushed in pieces when another pattern is
+    // live from one of its later groups: a fragment is not recognised, so a
+    // card or phone would leak, and a rejected over-long `+` run's first group
+    // alone would pass the digit-count check and be redacted.
     for response in [
+        "pay 4111 1111 1111 1111\n5 end",
+        "call +44 7700 900123\n2 end",
+        "call +44 7700 900123\t2 end",
+        "id +12345678 90123456 78901234 end",
         "id **+12345678 90123456** end",
         "id +1234 5678 9012 3456. end",
         "call +44 7700 900123, ok",
@@ -247,11 +253,10 @@ fn overlong_plus_run_hold_back_is_bounded() {
     let mut emitted = 0;
     for (pushed, ch) in response.char_indices() {
         emitted += runner.push(&mut stack, &ch.to_string()).unwrap().len();
-        assert!(
-            pushed + 1 - emitted <= 64,
-            "holding {} bytes",
-            pushed + 1 - emitted
-        );
+        // Overlapping candidates (the 16-digit `+` hold, a 19-digit card) cap
+        // the hold at a few dozen bytes however long the run grows.
+        let held = pushed + 1 - emitted;
+        assert!(held <= 128, "holding {held} bytes");
     }
     let tail = runner.finish(&mut stack).unwrap();
     assert!(!tail.contains("[REDACTED"), "{tail:?}");
@@ -462,7 +467,7 @@ proptest::proptest! {
     /// punctuation, PII streaming output equals the unary `run_output`.
     #[test]
     fn prop_phone_streaming_equals_unary(
-        response in "[+0-9 .*a-]{0,40}",
+        response in "[+0-9 .*a\n\t-]{0,40}",
         chunk_len in 1usize..=8,
     ) {
         let unary = pii_output_stack().run_output(&response).unwrap();

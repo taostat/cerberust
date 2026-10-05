@@ -155,7 +155,13 @@ impl StreamOutput {
         split = split.min(stack.output_hold_floor(buf));
         // Whatever set the hold point, never flush part of a token: a scanner's
         // floor may fall inside one (a list word after a digit in a key).
-        whitespace_floor(buf, split)
+        split = whitespace_floor(buf, split);
+        // Nor part of a completed match: the unary scan must see it whole. Each
+        // step moves the split strictly earlier, so this terminates.
+        while let Some(start) = self.dfa.straddling_match_start(buf, split) {
+            split = whitespace_floor(buf, start);
+        }
+        split
     }
 }
 
