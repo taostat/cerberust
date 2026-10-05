@@ -298,6 +298,27 @@ fn chained_overlapping_matches_are_resolved_in_near_linear_time() {
 }
 
 #[test]
+fn matches_past_the_split_are_not_enumerated() {
+    // `x y` straddles a split; the live `a…` suffix after it holds a match of
+    // `a` at every byte, each found only after `a.*z` scans to the end for a
+    // `z`. Enumerating them all would make the push quadratic.
+    let rules = vec![
+        RegexRule::new("x y|a.*z|a", "XA").unwrap(),
+        RegexRule::new("y a", "YA").unwrap(),
+    ];
+    let scanners: Vec<Box<dyn Scanner>> = vec![Box::new(
+        RegexScanner::new(rules).with_direction(Direction::Output),
+    )];
+    let mut stack = ScannerStack::new(scanners, true);
+    let mut runner = StreamOutput::new(&stack);
+    let response = format!("x y {}", "a".repeat(40_000));
+    let start = std::time::Instant::now();
+    runner.push(&mut stack, &response).unwrap();
+    let elapsed = start.elapsed();
+    assert!(elapsed.as_millis() < 500, "push took {elapsed:?}");
+}
+
+#[test]
 fn overlong_plus_run_hold_back_is_bounded() {
     // A `+` run past 15 digits is rejected whatever follows, so the runner may
     // flush it and must not buffer (and rescan) the whole run until it ends.

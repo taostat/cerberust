@@ -319,8 +319,11 @@ struct Candidate {
     /// never ends past the longest DFA match from it, so no unary match of this
     /// pattern crosses a split outside `first_start..furthest_end`.
     furthest_end: usize,
-    /// The pattern's unary matches over the buffer, found on first use and kept
-    /// while the runner moves its split back match by match.
+    /// The pattern's unary matches over the buffer that start before the first
+    /// split asked about, found on first use and kept while the runner moves its
+    /// split back match by match. The split only moves back, so later queries
+    /// need no match past it — and enumerating past it would rescan the live
+    /// suffix on every push.
     unary: OnceCell<Option<Vec<(usize, usize)>>>,
 }
 
@@ -365,7 +368,8 @@ impl HoldScan {
             }
             let unary = c.unary.get_or_init(|| {
                 let re = self.compiled.regex(c.pattern)?;
-                Some(re.find_iter(buf).map(|m| (m.start(), m.end())).collect())
+                let matches = re.find_iter(buf).take_while(|m| m.start() < split);
+                Some(matches.map(|m| (m.start(), m.end())).collect())
             });
             let start = match unary {
                 // Sorted and non-overlapping: only the last match starting
