@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- `PiiScanner` now detects `+`-prefixed international phone numbers of 7–15
+  digits in any grouping (for example, `+44 7700 900123` or `+33 1 23 45 67 89`).
+  Previously only US-style 3-3-4 grouping was matched, so most non-US numbers
+  passed through unredacted.
+
 ## [0.2.1]
 
 ### Added

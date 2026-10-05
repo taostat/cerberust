@@ -112,7 +112,12 @@ fn never_match() -> &'static Regex {
 /// fields of [`StructuredRules`].
 const STRUCTURED_PATTERNS: [&str; 6] = [
     r"[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,}",
-    r"(?:\+?\d{1,3}[\s.\-]?)?(?:\(\d{3}\)|\d{3})[\s.\-]\d{3}[\s.\-]\d{4}\b",
+    // Phone: NANP 3-3-4 grouping (optional country code), or any `+`-prefixed
+    // E.164 number of 7–15 digits in whatever grouping the country uses
+    // (`+44 7700 900123`, `+33 1 23 45 67 89`). The E.164 separators sit
+    // between digits and exclude newlines, so the match never swallows trailing
+    // whitespace or a number on the next line.
+    r"(?:\+?\d{1,3}[\s.\-]?)?(?:\(\d{3}\)|\d{3})[\s.\-]\d{3}[\s.\-]\d{4}\b|\+\d(?:[ .\-]?\d){6,14}\b",
     r"\b\d{3}-\d{2}-\d{4}\b",
     r"\b(?:\d{1,3}\.){3}\d{1,3}\b",
     // Candidate card numbers: 13–19 digits, optionally space/hyphen grouped.
@@ -736,6 +741,33 @@ mod tests {
     fn ipv4_validation_rejects_out_of_range() {
         assert!(is_valid_ipv4("192.168.1.1"));
         assert!(!is_valid_ipv4("999.1.1.1"));
+    }
+
+    fn phones(text: &str) -> Vec<&str> {
+        let mut found = Vec::new();
+        for s in detect_structured(text) {
+            if s.ty == "PHONE" {
+                found.push(&text[s.start..s.end]);
+            }
+        }
+        found
+    }
+
+    #[test]
+    fn detects_international_phone_numbers() {
+        assert_eq!(phones("call +44 7700 900123 today"), ["+44 7700 900123"]);
+        assert_eq!(phones("tel:+447700900123."), ["+447700900123"]);
+        assert_eq!(phones("Paris +33 1 23 45 67 89"), ["+33 1 23 45 67 89"]);
+        assert_eq!(phones("Berlin +49-30-1234567"), ["+49-30-1234567"]);
+        assert_eq!(phones("US +1 555 123 4567"), ["+1 555 123 4567"]);
+    }
+
+    #[test]
+    fn international_phone_stops_at_line_end_and_digit_limit() {
+        assert_eq!(phones("+44 7700 900123\n2024"), ["+44 7700 900123"]);
+        // Too short for E.164 (6 digits) and too long (16 digits).
+        assert!(phones("score +123456").is_empty());
+        assert!(phones("id +1234567890123456").is_empty());
     }
 
     #[test]
