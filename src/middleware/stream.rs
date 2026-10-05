@@ -149,13 +149,20 @@ impl StreamOutput {
         if at_eof {
             return buf.len();
         }
-        let mut split = self.dfa.safe_flush_len(buf, false);
+        let hold = self.dfa.scan(buf);
+        let mut split = hold.flush_len();
         split = split.min(token_boundary_floor(buf));
         split = split.min(sentinel_floor(stack, buf));
         split = split.min(stack.output_hold_floor(buf));
         // Whatever set the hold point, never flush part of a token: a scanner's
         // floor may fall inside one (a list word after a digit in a key).
-        whitespace_floor(buf, split)
+        split = whitespace_floor(buf, split);
+        // Nor part of a completed match: the unary scan must see it whole. Each
+        // step moves the split strictly earlier, so this terminates.
+        while let Some(start) = hold.straddling_start(buf, split) {
+            split = whitespace_floor(buf, start);
+        }
+        split
     }
 }
 

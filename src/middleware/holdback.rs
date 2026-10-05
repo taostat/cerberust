@@ -25,13 +25,29 @@
 //! PEM `[\s\S]*?` body) keeps every interior start live, so the runner holds
 //! from the secret's first byte until the match provably completes or dies.
 //!
+//! # Completed matches are flushed whole
+//!
+//! A match that has already completed is not live, but the hold point another
+//! pattern sets (or the last whitespace) can still fall inside it: a spaced
+//! card followed by `\n5` leaves a phone pattern live from the card's last
+//! group. Flushing there hands the unary scan a fragment it does not recognise,
+//! and the card leaks. `HoldScan::straddling_start` finds such a
+//! match so the runner moves the split back to its start. It follows each
+//! pattern's own non-overlapping matches, as each unary detector's `find_iter`
+//! does — overlapping candidates of one pattern (a card candidate at every digit
+//! of a long run) would otherwise chain the split back to the buffer start.
+//!
 //! [`stream_patterns`]: crate::Scanner::stream_patterns
 
+use std::cell::OnceCell;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, OnceLock};
 
 use regex_automata::{
-    hybrid::dfa::{Cache, DFA},
+    hybrid::{
+        dfa::{Cache, DFA},
+        LazyStateID,
+    },
     util::start::Config as StartConfig,
     Anchored, MatchKind,
 };
@@ -41,11 +57,34 @@ use regex_automata::{
 /// memo must not grow without bound.
 const MEMO_LIMIT: usize = 64;
 
+/// The compiled form of one pattern set, shared by every stream that uses it.
+#[derive(Debug)]
+struct Compiled {
+    dfa: DFA,
+    /// Each DFA pattern's source, by pattern index, with its leftmost-first
+    /// regex compiled on first use — the semantics the unary detectors match
+    /// with, which the `All`-semantics DFA cannot report.
+    sources: Vec<(String, OnceLock<Option<regex::bytes::Regex>>)>,
+}
+
+impl Compiled {
+    fn new(dfa: DFA, sources: Vec<String>) -> Self {
+        let sources = sources.into_iter().map(|s| (s, OnceLock::new())).collect();
+        Self { dfa, sources }
+    }
+
+    fn regex(&self, pattern: usize) -> Option<&regex::bytes::Regex> {
+        let (source, re) = self.sources.get(pattern)?;
+        re.get_or_init(|| regex::bytes::Regex::new(source).ok())
+            .as_ref()
+    }
+}
+
 /// A compiled hold-back DFA over the union of the active output scanners'
 /// stream patterns.
 #[derive(Debug)]
 pub struct HoldBackDfa {
-    dfa: Arc<DFA>,
+    compiled: Arc<Compiled>,
     /// The lazy DFA's state cache, kept across calls so states built for one
     /// buffer are reused for the next instead of being recomputed per push.
     cache: Mutex<Cache>,
@@ -66,13 +105,13 @@ impl HoldBackDfa {
     /// per distinct pattern set; each call still gets its own per-use cache.
     #[must_use]
     pub fn new(patterns: &[String]) -> Self {
-        static MEMO: OnceLock<Mutex<HashMap<Vec<String>, Arc<DFA>>>> = OnceLock::new();
+        static MEMO: OnceLock<Mutex<HashMap<Vec<String>, Arc<Compiled>>>> = OnceLock::new();
         if patterns.is_empty() {
             return Self::nothing();
         }
         let memo = MEMO.get_or_init(|| Mutex::new(HashMap::new()));
-        if let Some(dfa) = memo.lock().ok().and_then(|m| m.get(patterns).cloned()) {
-            return Self::with_dfa(dfa, false);
+        if let Some(compiled) = memo.lock().ok().and_then(|m| m.get(patterns).cloned()) {
+            return Self::with_compiled(compiled, false);
         }
         let built = Self::build(patterns);
         if !built.empty {
@@ -80,28 +119,29 @@ impl HoldBackDfa {
                 if m.len() >= MEMO_LIMIT {
                     m.clear();
                 }
-                m.insert(patterns.to_vec(), Arc::clone(&built.dfa));
+                m.insert(patterns.to_vec(), Arc::clone(&built.compiled));
             }
         }
         built
     }
 
-    fn with_dfa(dfa: Arc<DFA>, empty: bool) -> Self {
-        let cache = Mutex::new(dfa.create_cache());
-        Self { dfa, cache, empty }
+    fn with_compiled(compiled: Arc<Compiled>, empty: bool) -> Self {
+        let cache = Mutex::new(compiled.dfa.create_cache());
+        Self {
+            compiled,
+            cache,
+            empty,
+        }
     }
 
     fn build(patterns: &[String]) -> Self {
-        let patterns: Vec<String> = patterns.iter().map(|p| ascii_word_boundaries(p)).collect();
+        let rewritten: Vec<String> = patterns.iter().map(|p| ascii_word_boundaries(p)).collect();
         // `All` match semantics keep every alive thread rather than reporting the
         // leftmost-first match and stopping — the hold-back needs to know a
         // thread is *still alive*, not merely that one match already finished.
-        let built = DFA::builder()
-            .configure(DFA::config().match_kind(MatchKind::All))
-            .build_many(&patterns);
-        match built {
-            Ok(dfa) => Self::with_dfa(Arc::new(dfa), false),
-            Err(_) => Self::compile_individually(&patterns),
+        match all_matches_dfa().build_many(&rewritten) {
+            Ok(dfa) => Self::with_compiled(Arc::new(Compiled::new(dfa, patterns.to_vec())), false),
+            Err(_) => Self::compile_individually(patterns, &rewritten),
         }
     }
 
@@ -110,11 +150,10 @@ impl HoldBackDfa {
     /// the same DFA over a never-matching pattern if it somehow fails, keeping
     /// the constructor panic-free.
     fn nothing() -> Self {
-        let dfa = DFA::builder()
-            .configure(DFA::config().match_kind(MatchKind::All))
+        let dfa = all_matches_dfa()
             .build_many::<&str>(&[])
             .unwrap_or_else(|_| never_match_dfa());
-        Self::with_dfa(Arc::new(dfa), true)
+        Self::with_compiled(Arc::new(Compiled::new(dfa, Vec::new())), true)
     }
 
     // The `nothing()` DFA is never consulted (an `empty` runner returns the full
@@ -122,25 +161,20 @@ impl HoldBackDfa {
 
     /// Build from only the patterns that compile when the combined build failed
     /// (one bad caller regex must not disable hold-back for the good ones).
-    fn compile_individually(patterns: &[String]) -> Self {
-        let good: Vec<String> = patterns
-            .iter()
-            .filter(|p| {
-                DFA::builder()
-                    .configure(DFA::config().match_kind(MatchKind::All))
-                    .build(p)
-                    .is_ok()
-            })
-            .cloned()
-            .collect();
+    fn compile_individually(patterns: &[String], rewritten: &[String]) -> Self {
+        let mut sources = Vec::new();
+        let mut good = Vec::new();
+        for (source, pattern) in patterns.iter().zip(rewritten) {
+            if all_matches_dfa().build(pattern).is_ok() {
+                sources.push(source.clone());
+                good.push(pattern.as_str());
+            }
+        }
         if good.is_empty() {
             return Self::nothing();
         }
-        match DFA::builder()
-            .configure(DFA::config().match_kind(MatchKind::All))
-            .build_many(&good)
-        {
-            Ok(dfa) => Self::with_dfa(Arc::new(dfa), false),
+        match all_matches_dfa().build_many(&good) {
+            Ok(dfa) => Self::with_compiled(Arc::new(Compiled::new(dfa, sources)), false),
             Err(_) => Self::nothing(),
         }
     }
@@ -155,52 +189,213 @@ impl HoldBackDfa {
     /// everything flushes (the final unary scan redacts any complete match).
     #[must_use]
     pub fn safe_flush_len(&self, buf: &[u8], at_eof: bool) -> usize {
-        if self.empty || at_eof {
+        if at_eof {
             return buf.len();
         }
-        let mut guard = self.cache.lock().unwrap_or_else(|poisoned| {
-            // An earlier call panicked mid-scan; its cache may be half-updated,
-            // so start from a fresh one rather than trust it.
-            let mut guard = poisoned.into_inner();
-            *guard = self.dfa.create_cache();
-            guard
-        });
-        for s in 0..buf.len() {
-            let before = s.checked_sub(1).map(|i| buf[i]);
-            if self.alive_at_eof(&mut guard, &buf[s..], before) {
-                return token_start(buf, s);
-            }
-        }
-        buf.len()
+        self.scan(buf).flush_len()
     }
 
-    /// Whether feeding `tail` into the anchored DFA from the start state leaves
-    /// it alive (never dead) all the way to the end — i.e. more bytes could
-    /// extend or complete a match that began at `tail`'s first byte.
+    /// One pass over `buf`: the flush length (see [`Self::safe_flush_len`]) and
+    /// what [`HoldScan::straddling_start`] needs to find a completed match a
+    /// split would cut.
     ///
-    /// `before` is the byte preceding `tail` (`None` at the buffer start), so a
-    /// pattern opening with `\b` is not treated as live in the middle of a word.
-    fn alive_at_eof(&self, cache: &mut Cache, tail: &[u8], before: Option<u8>) -> bool {
-        let config = StartConfig::new()
-            .anchored(Anchored::Yes)
-            .look_behind(before);
-        // Cannot prove dead ⇒ hold (conservative).
-        let Ok(start) = self.dfa.start_state(cache, &config) else {
-            return true;
-        };
-        let mut state = start;
-        for &b in tail {
-            state = match self.dfa.next_state(cache, state, b) {
-                Ok(s) => s,
-                Err(_) => return true,
-            };
-            if state.is_dead() {
-                return false;
+    /// A split falls only at 0, end-of-buffer, or just after whitespace, so only
+    /// a match containing whitespace can cross one. The DFA pass records, per
+    /// pattern with such a match before the live point, the first start and the
+    /// furthest end it saw. Where the lazy DFA cannot decide (a cache failure)
+    /// the start counts as live — hold.
+    #[must_use]
+    pub(crate) fn scan(&self, buf: &[u8]) -> HoldScan {
+        let mut spanning = SpanningPatterns::default();
+        let mut flush_len = buf.len();
+        if !self.empty {
+            let mut guard = self.cache.lock().unwrap_or_else(|poisoned| {
+                // An earlier call panicked mid-scan; its cache may be
+                // half-updated, so start from a fresh one rather than trust it.
+                let mut guard = poisoned.into_inner();
+                *guard = self.compiled.dfa.create_cache();
+                guard
+            });
+            for s in 0..buf.len() {
+                spanning.advance_next_whitespace(buf, s);
+                if !self.dies_from(&mut guard, buf, s, &mut spanning) {
+                    flush_len = token_start(buf, s);
+                    break;
+                }
             }
         }
-        // Reached end-of-buffer without dying: still a viable (live) start.
-        !state.is_dead()
+        HoldScan {
+            flush_len,
+            compiled: Arc::clone(&self.compiled),
+            candidates: spanning.patterns,
+        }
     }
+
+    /// Feed `buf[start..]` into the anchored DFA. Returns `true` when it dies
+    /// before end-of-buffer, noting in `spanning` each pattern that matched
+    /// across whitespace on the way; `false` when it is still alive at
+    /// end-of-buffer (a match could still be forming) or cannot decide.
+    ///
+    /// The byte before `start` is the look-behind, so a pattern opening with
+    /// `\b` is not treated as live in the middle of a word.
+    #[inline]
+    fn dies_from(
+        &self,
+        cache: &mut Cache,
+        buf: &[u8],
+        start: usize,
+        spanning: &mut SpanningPatterns,
+    ) -> bool {
+        let dfa = &self.compiled.dfa;
+        let config = StartConfig::new()
+            .anchored(Anchored::Yes)
+            .look_behind(start.checked_sub(1).map(|i| buf[i]));
+        let Ok(mut state) = dfa.start_state(cache, &config) else {
+            return false;
+        };
+        // Lazy-DFA matches are reported one byte late: a match state reached
+        // after feeding `buf[at]` is a match over `buf[start..at]`. Dead and
+        // match states are both tagged, so the common path is a single check.
+        for (at, &b) in (start..).zip(&buf[start..]) {
+            let Ok(next) = dfa.next_state(cache, state, b) else {
+                return false;
+            };
+            state = next;
+            if !state.is_tagged() {
+                continue;
+            }
+            if state.is_dead() {
+                return true;
+            }
+            if state.is_match() && spanning.next_whitespace < at {
+                self.note_patterns(cache, state, start, at, spanning);
+            }
+        }
+        false
+    }
+
+    /// Note every pattern `state` matches as having a whitespace-spanning match
+    /// over `start..end`.
+    fn note_patterns(
+        &self,
+        cache: &Cache,
+        state: LazyStateID,
+        start: usize,
+        end: usize,
+        spanning: &mut SpanningPatterns,
+    ) {
+        let dfa = &self.compiled.dfa;
+        for i in 0..dfa.match_len(cache, state) {
+            let pattern = dfa.match_pattern(cache, state, i).as_usize();
+            match spanning.patterns.iter_mut().find(|c| c.pattern == pattern) {
+                Some(c) => c.furthest_end = c.furthest_end.max(end),
+                None => spanning.patterns.push(Candidate {
+                    pattern,
+                    first_start: start,
+                    furthest_end: end,
+                    unary: OnceCell::new(),
+                }),
+            }
+        }
+    }
+}
+
+/// The patterns a [`HoldBackDfa::scan`] pass saw match across whitespace.
+#[derive(Debug, Default)]
+struct SpanningPatterns {
+    /// The first whitespace byte at or after the current start offset. It only
+    /// moves forward, so the whole pass finds it in linear time.
+    next_whitespace: usize,
+    /// In first-seen order. Few patterns span whitespace, so this stays short.
+    patterns: Vec<Candidate>,
+}
+
+/// The extent of one pattern's whitespace-spanning DFA matches in a buffer.
+#[derive(Debug)]
+struct Candidate {
+    pattern: usize,
+    first_start: usize,
+    /// The furthest end of any of them. A leftmost-first match from a start
+    /// never ends past the longest DFA match from it, so no unary match of this
+    /// pattern crosses a split outside `first_start..furthest_end`.
+    furthest_end: usize,
+    /// The pattern's unary matches over the buffer that start before the first
+    /// split asked about, found on first use and kept while the runner moves its
+    /// split back match by match. The split only moves back, so later queries
+    /// need no match past it — and enumerating past it would rescan the live
+    /// suffix on every push.
+    unary: OnceCell<Option<Vec<(usize, usize)>>>,
+}
+
+impl SpanningPatterns {
+    fn advance_next_whitespace(&mut self, buf: &[u8], start: usize) {
+        self.next_whitespace = self.next_whitespace.max(start);
+        while self.next_whitespace < buf.len() && !buf[self.next_whitespace].is_ascii_whitespace() {
+            self.next_whitespace += 1;
+        }
+    }
+}
+
+/// The result of [`HoldBackDfa::scan`] over one buffer.
+#[derive(Debug)]
+pub(crate) struct HoldScan {
+    flush_len: usize,
+    compiled: Arc<Compiled>,
+    candidates: Vec<Candidate>,
+}
+
+impl HoldScan {
+    /// The byte offset up to which no match can still be forming.
+    #[must_use]
+    pub(crate) fn flush_len(&self) -> usize {
+        self.flush_len
+    }
+
+    /// The start of the earliest completed match in `buf` (the buffer passed to
+    /// [`HoldBackDfa::scan`]) that begins before `split` and ends after it, if
+    /// any; the runner moves its split back to it.
+    ///
+    /// Calls on one scan must pass non-increasing splits, as the runner does:
+    /// the first call caches only the matches it needs, which covers every
+    /// smaller split but not a larger one.
+    ///
+    /// Matches are each pattern's leftmost-first, non-overlapping matches — the
+    /// ones the unary `find_iter` reports — found once with its regex, only for
+    /// a pattern whose DFA candidates straddle `split`. If that regex does not
+    /// compile, the pattern's first candidate start is returned — hold.
+    #[must_use]
+    pub(crate) fn straddling_start(&self, buf: &[u8], split: usize) -> Option<usize> {
+        let mut earliest: Option<usize> = None;
+        for c in &self.candidates {
+            if !(c.first_start < split && split < c.furthest_end) {
+                continue;
+            }
+            let unary = c.unary.get_or_init(|| {
+                let re = self.compiled.regex(c.pattern)?;
+                let matches = re.find_iter(buf).take_while(|m| m.start() < split);
+                Some(matches.map(|m| (m.start(), m.end())).collect())
+            });
+            let start = match unary {
+                // Sorted and non-overlapping: only the last match starting
+                // before `split` can contain it.
+                Some(matches) => matches[..matches.partition_point(|&(s, _)| s < split)]
+                    .last()
+                    .filter(|&&(_, end)| split < end)
+                    .map(|&(s, _)| s),
+                None => Some(c.first_start),
+            };
+            if let Some(start) = start {
+                earliest = Some(earliest.map_or(start, |e| e.min(start)));
+            }
+        }
+        earliest
+    }
+}
+
+fn all_matches_dfa() -> regex_automata::hybrid::dfa::Builder {
+    let mut builder = DFA::builder();
+    builder.configure(DFA::config().match_kind(MatchKind::All));
+    builder
 }
 
 /// Snap a hold point down to the start of the whitespace-delimited token that
@@ -259,10 +454,7 @@ fn ascii_word_boundaries(pattern: &str) -> String {
 /// if even it fails to build, recurse rather than panic (unreachable in
 /// practice, total by construction).
 fn never_match_dfa() -> DFA {
-    match DFA::builder()
-        .configure(DFA::config().match_kind(MatchKind::All))
-        .build(r"[^\s\S]")
-    {
+    match all_matches_dfa().build(r"[^\s\S]") {
         Ok(dfa) => dfa,
         Err(_) => never_match_dfa(),
     }
@@ -283,12 +475,11 @@ mod tests {
 
     #[test]
     fn word_boundary_pattern_is_not_live_mid_word() {
-        let d = dfa(&[r"\b[0-9a-f]{40}"]);
-        let mut cache = d.dfa.create_cache();
+        let d = dfa(&[r"\b[0-9]{40}"]);
         // Inside a word, `\b` cannot hold: not a live start.
-        assert!(!d.alive_at_eof(&mut cache, b"0123", Some(b'a')));
+        assert_eq!(d.scan(b"a0123").flush_len(), 5);
         // After a space it can.
-        assert!(d.alive_at_eof(&mut cache, b"0123", Some(b' ')));
+        assert_eq!(d.scan(b" 0123").flush_len(), 1);
     }
 
     #[test]
@@ -298,13 +489,13 @@ mod tests {
         assert_eq!(token_start(b"a\nbcd", 3), 2);
         // A shorter pattern alive inside a longer token holds the whole token.
         let d = dfa(&["[0-9a-f]{40}"]);
-        assert_eq!(d.safe_flush_len(b"key gm_live_0123", false), 4);
+        assert_eq!(d.scan(b"key gm_live_0123").flush_len(), 4);
     }
 
     #[test]
     fn empty_pattern_set_flushes_everything() {
         let d = dfa(&[]);
-        assert_eq!(d.safe_flush_len(b"anything at all", false), 15);
+        assert_eq!(d.scan(b"anything at all").flush_len(), 15);
     }
 
     #[test]
@@ -313,7 +504,7 @@ mod tests {
         // the hold point is at the 'A' of AKIA — flush nothing after it.
         let d = dfa(&[r"AKIA[0-9A-Z]{16}"]);
         let buf = b"see AKIAABC";
-        let flush = d.safe_flush_len(buf, false);
+        let flush = d.scan(buf).flush_len();
         assert_eq!(&buf[..flush], b"see ");
     }
 
@@ -323,7 +514,7 @@ mod tests {
         // is dead-from-every-start, so it all flushes.
         let d = dfa(&[r"AKIA[0-9A-Z]{16}"]);
         let buf = b"AKIA!rest";
-        assert_eq!(d.safe_flush_len(buf, false), buf.len());
+        assert_eq!(d.scan(buf).flush_len(), buf.len());
     }
 
     #[test]
@@ -332,6 +523,7 @@ mod tests {
         let d = dfa(&[r"AKIA[0-9A-Z]{16}"]);
         let buf = b"see AKIAABC";
         assert_eq!(d.safe_flush_len(buf, true), buf.len());
+        assert_eq!(d.safe_flush_len(buf, false), 4);
     }
 
     #[test]
@@ -340,7 +532,7 @@ mod tests {
         // the hold point is the 's' of "sk-".
         let d = dfa(&[r"sk-[A-Za-z0-9]{20,}"]);
         let buf = b"key sk-aaaaaaaaaaaaaaaaaaaaaa";
-        let flush = d.safe_flush_len(buf, false);
+        let flush = d.scan(buf).flush_len();
         assert_eq!(&buf[..flush], b"key ");
     }
 
@@ -348,7 +540,7 @@ mod tests {
     fn clean_buffer_with_patterns_flushes_whole() {
         let d = dfa(&[r"AKIA[0-9A-Z]{16}"]);
         let buf = b"the quick brown fox";
-        assert_eq!(d.safe_flush_len(buf, false), buf.len());
+        assert_eq!(d.scan(buf).flush_len(), buf.len());
     }
 
     #[test]
@@ -356,7 +548,29 @@ mod tests {
         // An unparseable pattern is dropped; the good one still holds back.
         let d = dfa(&[r"AKIA[0-9A-Z]{16}", r"(unclosed"]);
         let buf = b"AKIAABC";
-        assert_eq!(d.safe_flush_len(buf, false), 0);
+        assert_eq!(d.scan(buf).flush_len(), 0);
+    }
+
+    #[test]
+    fn finds_a_completed_match_crossing_the_split() {
+        let d = dfa(&[r"[0-9]{4} [0-9]{4}"]);
+        let buf = b"pay 1234 5678 now";
+        let scan = d.scan(buf);
+        assert_eq!(scan.flush_len(), 17);
+        assert_eq!(scan.straddling_start(buf, 9), Some(4));
+        assert_eq!(scan.straddling_start(buf, 4), None);
+        assert_eq!(scan.straddling_start(buf, 14), None);
+    }
+
+    #[test]
+    fn straddle_follows_each_patterns_non_overlapping_matches() {
+        // A candidate starting inside the pattern's previous candidate is not a
+        // match `find_iter` would report, so it cannot pull the split back.
+        let d = dfa(&[r"[0-9]{4} [0-9]{4}"]);
+        let buf = b"1111 2222 3333 4444 x";
+        let scan = d.scan(buf);
+        assert_eq!(scan.straddling_start(buf, 15), Some(10));
+        assert_eq!(scan.straddling_start(buf, 10), None);
     }
 
     #[test]
@@ -377,7 +591,7 @@ mod tests {
         // split across chunks never flushes group-by-group.
         let d = dfa(&[r"\b(?:\d[ \-]?){13,19}\b"]);
         let buf = b"card 4111 1111 1111 ";
-        let flush = d.safe_flush_len(buf, false);
+        let flush = d.scan(buf).flush_len();
         // Hold from the first card digit: the buffered prefix is still a live,
         // incomplete card, so only the text before it flushes.
         assert_eq!(&buf[..flush], b"card ");

@@ -7,6 +7,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.2]
+
+### Security
+
+- **The streaming output runner no longer flushes a completed match in
+  pieces.** When another pattern was still live from one of a match's later
+  groups, the runner could flush at a point inside the match; the unary scan
+  then saw only fragments, so a spaced card (`4111 1111 1111 1111` followed by
+  a newline and a digit) streamed through unredacted. The runner now moves its
+  split back to the start of any completed match that crosses it, following
+  each pattern's own non-overlapping matches as the unary detectors do. The
+  check shares the hold-back DFA's existing pass over the buffer; streaming
+  throughput on a dense PII/secret benchmark is within ~5% of 0.2.1.
+
+### Fixed
+
+- `PiiScanner` now detects `+`-prefixed international phone numbers of 7–15
+  digits in any grouping (for example, `+44 7700 900123` or `+33 1 23 45 67 89`).
+  Previously only US-style 3-3-4 grouping was matched, so most non-US numbers
+  passed through unredacted. The digit count covers the whole `+` digit run, so
+  a longer grouped identifier is not redacted by its prefix.
+
 ## [0.2.1]
 
 ### Added
@@ -154,7 +176,8 @@ Initial public release.
 - **Benchmark harness** (`benchmarks/`) — head-to-head precision/recall and
   throughput against Python's `llm-guard` over a shared labelled corpus.
 
-[Unreleased]: https://github.com/taostat/cerberust/compare/v0.2.1...HEAD
+[Unreleased]: https://github.com/taostat/cerberust/compare/v0.2.2...HEAD
+[0.2.2]: https://github.com/taostat/cerberust/compare/v0.2.1...v0.2.2
 [0.2.1]: https://github.com/taostat/cerberust/compare/v0.2.0...v0.2.1
 [0.2.0]: https://github.com/taostat/cerberust/compare/v0.1.1...v0.2.0
 [0.1.1]: https://github.com/taostat/cerberust/compare/v0.1.0...v0.1.1

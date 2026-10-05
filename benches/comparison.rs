@@ -321,7 +321,7 @@ fn main() {
         r"[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,}",
         "EMAIL",
     )]);
-    assert!(errs.is_empty());
+    assert!(errs.is_empty(), "{errs:?}");
     results.push(run_scanner("Regex", &regex_scanner, &corpus, |s| {
         s.text.contains('@') && s.pii
     }));

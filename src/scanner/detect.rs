@@ -130,18 +130,37 @@ const STRUCTURED_PATTERNS: [&str; 6] = [
     r"\b[A-Za-z]{2}\d{2}(?:[ ]?[A-Za-z0-9]){11,32}\b",
 ];
 
+/// Candidate international phone numbers: `+` then an ASCII digit run in any
+/// grouping the country uses (`+44 7700 900123`, `+33 1 23 45 67 89`). The run
+/// is unbounded so the whole grouped value is one candidate; `e164_digits_ok`
+/// then requires 7–15 digits across all of it, so an over-long grouped
+/// identifier is rejected rather than redacted by prefix. Separators sit between
+/// digits and exclude newlines, so the match never swallows trailing whitespace
+/// or a number on the next line.
+const INTL_PHONE_PATTERN: &str = r"\+[0-9](?:[ .\-]?[0-9])*";
+
+/// The streaming hold-back form of [`INTL_PHONE_PATTERN`], capped at 16 digits:
+/// one past the E.164 maximum decides rejection, so an endless run is flushed in
+/// pieces — none of which starts with `+`, so none is a candidate — rather than
+/// held whole. The runner never splits a completed match, so the flushed piece
+/// carries all 16 digits and is rejected, as the unary scan rejects the run.
+const INTL_PHONE_HOLD_PATTERN: &str = r"\+[0-9](?:[ .\-]?[0-9]){0,15}";
+
 /// The structured-PII detector patterns as DFA hold-back source strings.
 #[must_use]
 pub fn structured_pattern_sources() -> Vec<String> {
-    STRUCTURED_PATTERNS
+    let mut sources: Vec<String> = STRUCTURED_PATTERNS
         .iter()
         .map(|p| (*p).to_owned())
-        .collect()
+        .collect();
+    sources.push(INTL_PHONE_HOLD_PATTERN.to_owned());
+    sources
 }
 
 struct StructuredRules {
     email: Regex,
     phone: Regex,
+    intl_phone: Regex,
     ssn: Regex,
     ip: Regex,
     digits: Regex,
@@ -157,6 +176,7 @@ fn structured_rules() -> &'static StructuredRules {
         ip: structured_rule(STRUCTURED_PATTERNS[3]),
         digits: structured_rule(STRUCTURED_PATTERNS[4]),
         iban: structured_rule(STRUCTURED_PATTERNS[5]),
+        intl_phone: structured_rule(INTL_PHONE_PATTERN),
     })
 }
 
@@ -174,6 +194,11 @@ pub fn detect_structured(text: &str) -> Vec<Span> {
     }
     for m in r.phone.find_iter(text) {
         spans.push(Span::new(m.start(), m.end(), "PHONE", 0.85));
+    }
+    for m in r.intl_phone.find_iter(text) {
+        if e164_digits_ok(m.as_str()) {
+            spans.push(Span::new(m.start(), m.end(), "PHONE", 0.85));
+        }
     }
     for m in r.ssn.find_iter(text) {
         spans.push(Span::new(m.start(), m.end(), "US_SSN", 0.9));
@@ -195,6 +220,13 @@ pub fn detect_structured(text: &str) -> Vec<Span> {
         }
     }
     spans
+}
+
+/// E.164 allows at most 15 digits including the country code; fewer than 7
+/// is too short to be a dialable international number.
+fn e164_digits_ok(candidate: &str) -> bool {
+    let digits = candidate.bytes().filter(u8::is_ascii_digit).count();
+    (7..=15).contains(&digits)
 }
 
 fn is_valid_ipv4(s: &str) -> bool {
@@ -736,6 +768,61 @@ mod tests {
     fn ipv4_validation_rejects_out_of_range() {
         assert!(is_valid_ipv4("192.168.1.1"));
         assert!(!is_valid_ipv4("999.1.1.1"));
+    }
+
+    fn phones(text: &str) -> Vec<&str> {
+        let mut found = Vec::new();
+        for s in resolve_overlaps(detect_structured(text)) {
+            if s.ty == "PHONE" {
+                found.push(&text[s.start..s.end]);
+            }
+        }
+        found
+    }
+
+    #[test]
+    fn detects_international_phone_numbers() {
+        assert_eq!(phones("call +44 7700 900123 today"), ["+44 7700 900123"]);
+        assert_eq!(phones("tel:+447700900123."), ["+447700900123"]);
+        assert_eq!(phones("Paris +33 1 23 45 67 89"), ["+33 1 23 45 67 89"]);
+        assert_eq!(phones("Berlin +49-30-1234567"), ["+49-30-1234567"]);
+        assert_eq!(phones("US +1 555 123 4567"), ["+1 555 123 4567"]);
+    }
+
+    #[test]
+    fn international_phone_counts_only_ascii_digits() {
+        // Full-width digits are not part of the candidate, so they neither pad
+        // a short run past the limit nor form a number on their own.
+        assert_eq!(phones("+1234567８９０"), ["+1234567"]);
+        assert_eq!(phones("+４４７７００９００１２３"), Vec::<&str>::new());
+    }
+
+    #[test]
+    fn international_phone_stops_at_line_end() {
+        assert_eq!(phones("+44 7700 900123\n2024"), ["+44 7700 900123"]);
+    }
+
+    #[test]
+    fn international_phone_rejects_wrong_digit_count_whole_candidate() {
+        assert_eq!(phones("score +123456"), Vec::<&str>::new());
+        assert_eq!(phones("id +1234567890123456"), Vec::<&str>::new());
+        // 16 digits in groups: no 15-digit prefix is redacted either.
+        assert_eq!(phones("id +1234 5678 9012 3456"), Vec::<&str>::new());
+    }
+
+    #[test]
+    fn international_candidate_does_not_hide_a_us_number() {
+        // The `+` run is rejected (23 digits) but must not stop the NANP rule
+        // from covering the US number it overlaps, as it did before.
+        let text = "+447700900123 555-123-4567";
+        let us_start = text.len() - "555-123-4567".len();
+        let spans = resolve_overlaps(detect_structured(text));
+        for byte in us_start..text.len() {
+            assert!(
+                spans.iter().any(|s| s.start <= byte && byte < s.end),
+                "byte {byte}"
+            );
+        }
     }
 
     #[test]

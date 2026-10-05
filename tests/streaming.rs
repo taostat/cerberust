@@ -187,6 +187,157 @@ fn split_iban_is_fully_redacted_across_chunks() {
 }
 
 #[test]
+fn split_international_phone_is_fully_redacted_across_chunks() {
+    // A spaced `+44` number straddles chunk boundaries; the hold-back DFA must
+    // buffer the whole digit run so no group of it is emitted before redaction.
+    let response = "call +44 7700 900123 today";
+    for chunk_len in 1..=7 {
+        let scanners: Vec<Box<dyn Scanner>> = vec![Box::new(PiiScanner::sensitive_output())];
+        let mut stack = ScannerStack::new(scanners, true);
+        let emitted = stream_collect(&mut stack, response, chunk_len);
+        for group in ["7700", "900123"] {
+            assert!(
+                !emitted.contains(group),
+                "leaked {group} at chunk_len {chunk_len}: {emitted:?}"
+            );
+        }
+        assert!(emitted.starts_with("call [REDACTED_PHONE_1_"));
+        assert!(emitted.ends_with(" today"));
+    }
+}
+
+fn pii_output_stack() -> ScannerStack {
+    let scanners: Vec<Box<dyn Scanner>> = vec![Box::new(PiiScanner::sensitive_output())];
+    ScannerStack::new(scanners, true)
+}
+
+fn assert_pii_stream_equals_unary(response: &str, chunk_len: usize) {
+    let unary = pii_output_stack().run_output(response).unwrap();
+    let streamed = run_chunked(&mut pii_output_stack(), response, chunk_len, |_| {});
+    assert_eq!(
+        normalize_nonces(&streamed),
+        normalize_nonces(&unary),
+        "stream != unary for {response:?} at chunk_len {chunk_len}",
+    );
+}
+
+#[test]
+fn completed_matches_stream_like_unary() {
+    // A completed match must not be flushed in pieces when another pattern is
+    // live from one of its later groups: a fragment is not recognised, so a
+    // card or phone would leak, and a rejected over-long `+` run's first group
+    // alone would pass the digit-count check and be redacted.
+    for response in [
+        "pay 4111 1111 1111 1111\n5 end",
+        "call +44 7700 900123\n2 end",
+        "call +44 7700 900123\t2 end",
+        "id +12345678 90123456 78901234 end",
+        "id **+12345678 90123456** end",
+        "id +1234 5678 9012 3456. end",
+        "call +44 7700 900123, ok",
+        "+447700900123 555-123-4567 done",
+    ] {
+        for chunk_len in 1..=8 {
+            assert_pii_stream_equals_unary(response, chunk_len);
+        }
+    }
+}
+
+#[test]
+fn straddle_follows_the_unary_regex_choice_among_alternatives() {
+    // Leftmost-first picks `a`, not the longer `a b`, so the unary scan's next
+    // match is `b c`; holding by the longest alternative would skip `b c` and
+    // flush part of it.
+    let rule = RegexRule::new("a|a b|b c|c d|d xZ", "ALT").unwrap();
+    for chunk_len in [1, 2, 3, 9] {
+        let scanners: Vec<Box<dyn Scanner>> = vec![Box::new(
+            RegexScanner::new(vec![rule.clone()]).with_direction(Direction::Output),
+        )];
+        let mut stack = ScannerStack::new(scanners, true);
+        let unary = stack.run_output("a b c d x").unwrap();
+        let streamed = run_chunked(&mut stack, "a b c d x", chunk_len, |_| {});
+        assert_eq!(
+            normalize_nonces(&streamed),
+            normalize_nonces(&unary),
+            "chunk_len {chunk_len}"
+        );
+    }
+}
+
+#[test]
+fn long_unbroken_match_is_scanned_in_linear_time() {
+    // An email-shaped run that keeps matching for 100k bytes with no
+    // whitespace: the hold-back pass must stay linear in the buffer.
+    let response = format!("a@b.{}", "x".repeat(100_000));
+    let mut stack = pii_output_stack();
+    let mut runner = StreamOutput::new(&stack);
+    let start = std::time::Instant::now();
+    runner.push(&mut stack, &response).unwrap();
+    let elapsed = start.elapsed();
+    assert!(elapsed.as_millis() < 500, "push took {elapsed:?}");
+}
+
+#[test]
+fn chained_overlapping_matches_are_resolved_in_near_linear_time() {
+    // `a b` and `b a` overlap end to end, so the split steps back one match at
+    // a time across the whole run; each step must not rescan the buffer.
+    let rules = vec![
+        RegexRule::new("a b", "AB").unwrap(),
+        RegexRule::new("b a", "BA").unwrap(),
+    ];
+    let scanners: Vec<Box<dyn Scanner>> = vec![Box::new(
+        RegexScanner::new(rules).with_direction(Direction::Output),
+    )];
+    let mut stack = ScannerStack::new(scanners, true);
+    let mut runner = StreamOutput::new(&stack);
+    let response = "a b ".repeat(25_000);
+    let start = std::time::Instant::now();
+    runner.push(&mut stack, &response).unwrap();
+    let elapsed = start.elapsed();
+    assert!(elapsed.as_millis() < 2_000, "push took {elapsed:?}");
+}
+
+#[test]
+fn matches_past_the_split_are_not_enumerated() {
+    // `x y` straddles a split; the live `a…` suffix after it holds a match of
+    // `a` at every byte, each found only after `a.*z` scans to the end for a
+    // `z`. Enumerating them all would make the push quadratic.
+    let rules = vec![
+        RegexRule::new("x y|a.*z|a", "XA").unwrap(),
+        RegexRule::new("y a", "YA").unwrap(),
+    ];
+    let scanners: Vec<Box<dyn Scanner>> = vec![Box::new(
+        RegexScanner::new(rules).with_direction(Direction::Output),
+    )];
+    let mut stack = ScannerStack::new(scanners, true);
+    let mut runner = StreamOutput::new(&stack);
+    let response = format!("x y {}", "a".repeat(40_000));
+    let start = std::time::Instant::now();
+    runner.push(&mut stack, &response).unwrap();
+    let elapsed = start.elapsed();
+    assert!(elapsed.as_millis() < 500, "push took {elapsed:?}");
+}
+
+#[test]
+fn overlong_plus_run_hold_back_is_bounded() {
+    // A `+` run past 15 digits is rejected whatever follows, so the runner may
+    // flush it and must not buffer (and rescan) the whole run until it ends.
+    let response = format!("+{}end", "0 ".repeat(1000));
+    let mut stack = pii_output_stack();
+    let mut runner = StreamOutput::new(&stack);
+    let mut emitted = 0;
+    for (pushed, ch) in response.char_indices() {
+        emitted += runner.push(&mut stack, &ch.to_string()).unwrap().len();
+        // Overlapping candidates (the 16-digit `+` hold, a 19-digit card) cap
+        // the hold at a few dozen bytes however long the run grows.
+        let held = pushed + 1 - emitted;
+        assert!(held <= 128, "holding {held} bytes");
+    }
+    let tail = runner.finish(&mut stack).unwrap();
+    assert!(!tail.contains("[REDACTED"), "{tail:?}");
+}
+
+#[test]
 fn whole_stream_scanner_buffers_then_passes_clean() {
     // A blocking ban-topics scanner declares WholeStream: the runner emits
     // nothing until finish, then passes a clean response through whole.
@@ -200,10 +351,10 @@ fn whole_stream_scanner_buffers_then_passes_clean() {
     for chunk in ["the weather ", "is nice ", "today"] {
         let safe = runner.push(&mut stack, chunk).unwrap();
         // Mode B emits nothing mid-stream: first-token latency = full generation.
-        assert!(safe.is_empty());
+        assert_eq!(safe, "");
         emitted.push_str(&safe);
     }
-    assert!(emitted.is_empty());
+    assert_eq!(emitted, "");
     emitted.push_str(&runner.finish(&mut stack).unwrap());
     assert_eq!(emitted, "the weather is nice today");
 }
@@ -217,7 +368,7 @@ fn whole_stream_scanner_blocks_on_banned_response() {
     let mut stack = ScannerStack::new(scanners, true);
     let mut runner = StreamOutput::new(&stack);
     for chunk in ["how to ", "build a ", "weapon"] {
-        assert!(runner.push(&mut stack, chunk).unwrap().is_empty());
+        assert_eq!(runner.push(&mut stack, chunk).unwrap(), "");
     }
     // The full buffered response trips the ban: finish blocks the whole turn.
     assert!(runner.finish(&mut stack).is_err());
@@ -237,7 +388,7 @@ fn output_phrase_gate_blocks_phrase_split_across_chunks() {
     let mut runner = StreamOutput::new(&stack);
     // Split the phrase across several chunks: no single chunk contains it whole.
     for chunk in ["Sure! As an ", "AI language ", "model, I refuse."] {
-        assert!(runner.push(&mut stack, chunk).unwrap().is_empty());
+        assert_eq!(runner.push(&mut stack, chunk).unwrap(), "");
     }
     assert!(runner.finish(&mut stack).is_err());
 }
@@ -251,7 +402,7 @@ fn output_phrase_gate_passes_when_phrase_absent() {
     let mut stack = ScannerStack::new(scanners, true);
     let mut runner = StreamOutput::new(&stack);
     for chunk in ["a perfectly ", "ordinary ", "answer"] {
-        assert!(runner.push(&mut stack, chunk).unwrap().is_empty());
+        assert_eq!(runner.push(&mut stack, chunk).unwrap(), "");
     }
     assert_eq!(
         runner.finish(&mut stack).unwrap(),
@@ -384,6 +535,18 @@ proptest::proptest! {
         let mut stream_stack = output_secret_stack();
         let streamed = run_chunked(&mut stream_stack, &response, chunk_len, |_| {});
 
+        proptest::prop_assert_eq!(normalize_nonces(&streamed), normalize_nonces(&unary));
+    }
+
+    /// For any chunking of text built from digits, phone separators and
+    /// punctuation, PII streaming output equals the unary `run_output`.
+    #[test]
+    fn prop_phone_streaming_equals_unary(
+        response in "[+0-9 .*a\n\t-]{0,40}",
+        chunk_len in 1usize..=8,
+    ) {
+        let unary = pii_output_stack().run_output(&response).unwrap();
+        let streamed = run_chunked(&mut pii_output_stack(), &response, chunk_len, |_| {});
         proptest::prop_assert_eq!(normalize_nonces(&streamed), normalize_nonces(&unary));
     }
 
