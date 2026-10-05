@@ -31,7 +31,7 @@
 //! pattern sets (or the last whitespace) can still fall inside it: a spaced
 //! card followed by `\n5` leaves a phone pattern live from the card's last
 //! group. Flushing there hands the unary scan a fragment it does not recognise,
-//! and the card leaks. [`HoldScan::straddling_start`] finds such a
+//! and the card leaks. `HoldScan::straddling_start` finds such a
 //! match so the runner moves the split back to its start. It follows each
 //! pattern's own non-overlapping matches, as each unary detector's `find_iter`
 //! does — overlapping candidates of one pattern (a card candidate at every digit
@@ -205,7 +205,7 @@ impl HoldBackDfa {
     /// furthest end it saw. Where the lazy DFA cannot decide (a cache failure)
     /// the start counts as live — hold.
     #[must_use]
-    pub fn scan(&self, buf: &[u8]) -> HoldScan {
+    pub(crate) fn scan(&self, buf: &[u8]) -> HoldScan {
         let mut spanning = SpanningPatterns::default();
         let mut flush_len = buf.len();
         if !self.empty {
@@ -338,7 +338,7 @@ impl SpanningPatterns {
 
 /// The result of [`HoldBackDfa::scan`] over one buffer.
 #[derive(Debug)]
-pub struct HoldScan {
+pub(crate) struct HoldScan {
     flush_len: usize,
     compiled: Arc<Compiled>,
     candidates: Vec<Candidate>,
@@ -347,7 +347,7 @@ pub struct HoldScan {
 impl HoldScan {
     /// The byte offset up to which no match can still be forming.
     #[must_use]
-    pub fn flush_len(&self) -> usize {
+    pub(crate) fn flush_len(&self) -> usize {
         self.flush_len
     }
 
@@ -355,12 +355,16 @@ impl HoldScan {
     /// [`HoldBackDfa::scan`]) that begins before `split` and ends after it, if
     /// any; the runner moves its split back to it.
     ///
+    /// Calls on one scan must pass non-increasing splits, as the runner does:
+    /// the first call caches only the matches it needs, which covers every
+    /// smaller split but not a larger one.
+    ///
     /// Matches are each pattern's leftmost-first, non-overlapping matches — the
     /// ones the unary `find_iter` reports — found once with its regex, only for
     /// a pattern whose DFA candidates straddle `split`. If that regex does not
     /// compile, the pattern's first candidate start is returned — hold.
     #[must_use]
-    pub fn straddling_start(&self, buf: &[u8], split: usize) -> Option<usize> {
+    pub(crate) fn straddling_start(&self, buf: &[u8], split: usize) -> Option<usize> {
         let mut earliest: Option<usize> = None;
         for c in &self.candidates {
             if !(c.first_start < split && split < c.furthest_end) {
