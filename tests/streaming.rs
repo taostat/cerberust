@@ -278,6 +278,26 @@ fn long_unbroken_match_is_scanned_in_linear_time() {
 }
 
 #[test]
+fn chained_overlapping_matches_are_resolved_in_near_linear_time() {
+    // `a b` and `b a` overlap end to end, so the split steps back one match at
+    // a time across the whole run; each step must not rescan the buffer.
+    let rules = vec![
+        RegexRule::new("a b", "AB").unwrap(),
+        RegexRule::new("b a", "BA").unwrap(),
+    ];
+    let scanners: Vec<Box<dyn Scanner>> = vec![Box::new(
+        RegexScanner::new(rules).with_direction(Direction::Output),
+    )];
+    let mut stack = ScannerStack::new(scanners, true);
+    let mut runner = StreamOutput::new(&stack);
+    let response = "a b ".repeat(25_000);
+    let start = std::time::Instant::now();
+    runner.push(&mut stack, &response).unwrap();
+    let elapsed = start.elapsed();
+    assert!(elapsed.as_millis() < 2_000, "push took {elapsed:?}");
+}
+
+#[test]
 fn overlong_plus_run_hold_back_is_bounded() {
     // A `+` run past 15 digits is rejected whatever follows, so the runner may
     // flush it and must not buffer (and rescan) the whole run until it ends.

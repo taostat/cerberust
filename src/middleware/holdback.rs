@@ -39,6 +39,7 @@
 //!
 //! [`stream_patterns`]: crate::Scanner::stream_patterns
 
+use std::cell::OnceCell;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, OnceLock};
 
@@ -292,6 +293,7 @@ impl HoldBackDfa {
                     pattern,
                     first_start: start,
                     furthest_end: end,
+                    unary: OnceCell::new(),
                 }),
             }
         }
@@ -317,6 +319,9 @@ struct Candidate {
     /// never ends past the longest DFA match from it, so no unary match of this
     /// pattern crosses a split outside `first_start..furthest_end`.
     furthest_end: usize,
+    /// The pattern's unary matches over the buffer, found on first use and kept
+    /// while the runner moves its split back match by match.
+    unary: OnceCell<Option<Vec<(usize, usize)>>>,
 }
 
 impl SpanningPatterns {
@@ -348,7 +353,7 @@ impl HoldScan {
     /// any; the runner moves its split back to it.
     ///
     /// Matches are each pattern's leftmost-first, non-overlapping matches — the
-    /// ones the unary `find_iter` reports — found with its regex, run only for
+    /// ones the unary `find_iter` reports — found once with its regex, only for
     /// a pattern whose DFA candidates straddle `split`. If that regex does not
     /// compile, the pattern's first candidate start is returned — hold.
     #[must_use]
@@ -358,12 +363,17 @@ impl HoldScan {
             if !(c.first_start < split && split < c.furthest_end) {
                 continue;
             }
-            let start = match self.compiled.regex(c.pattern) {
-                Some(re) => re
-                    .find_iter(buf)
-                    .take_while(|m| m.start() < split)
-                    .find(|m| split < m.end())
-                    .map(|m| m.start()),
+            let unary = c.unary.get_or_init(|| {
+                let re = self.compiled.regex(c.pattern)?;
+                Some(re.find_iter(buf).map(|m| (m.start(), m.end())).collect())
+            });
+            let start = match unary {
+                // Sorted and non-overlapping: only the last match starting
+                // before `split` can contain it.
+                Some(matches) => matches[..matches.partition_point(|&(s, _)| s < split)]
+                    .last()
+                    .filter(|&&(_, end)| split < end)
+                    .map(|&(s, _)| s),
                 None => Some(c.first_start),
             };
             if let Some(start) = start {
