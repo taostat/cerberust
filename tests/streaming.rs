@@ -244,6 +244,40 @@ fn completed_matches_stream_like_unary() {
 }
 
 #[test]
+fn straddle_follows_the_unary_regex_choice_among_alternatives() {
+    // Leftmost-first picks `a`, not the longer `a b`, so the unary scan's next
+    // match is `b c`; holding by the longest alternative would skip `b c` and
+    // flush part of it.
+    let rule = RegexRule::new("a|a b|b c|c d|d xZ", "ALT").unwrap();
+    for chunk_len in [1, 2, 3, 9] {
+        let scanners: Vec<Box<dyn Scanner>> = vec![Box::new(
+            RegexScanner::new(vec![rule.clone()]).with_direction(Direction::Output),
+        )];
+        let mut stack = ScannerStack::new(scanners, true);
+        let unary = stack.run_output("a b c d x").unwrap();
+        let streamed = run_chunked(&mut stack, "a b c d x", chunk_len, |_| {});
+        assert_eq!(
+            normalize_nonces(&streamed),
+            normalize_nonces(&unary),
+            "chunk_len {chunk_len}"
+        );
+    }
+}
+
+#[test]
+fn long_unbroken_match_is_scanned_in_linear_time() {
+    // An email-shaped run that keeps matching for 100k bytes with no
+    // whitespace: the hold-back pass must stay linear in the buffer.
+    let response = format!("a@b.{}", "x".repeat(100_000));
+    let mut stack = pii_output_stack();
+    let mut runner = StreamOutput::new(&stack);
+    let start = std::time::Instant::now();
+    runner.push(&mut stack, &response).unwrap();
+    let elapsed = start.elapsed();
+    assert!(elapsed.as_millis() < 500, "push took {elapsed:?}");
+}
+
+#[test]
 fn overlong_plus_run_hold_back_is_bounded() {
     // A `+` run past 15 digits is rejected whatever follows, so the runner may
     // flush it and must not buffer (and rescan) the whole run until it ends.

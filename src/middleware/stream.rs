@@ -159,7 +159,7 @@ impl StreamOutput {
         split = whitespace_floor(buf, split);
         // Nor part of a completed match: the unary scan must see it whole. Each
         // step moves the split strictly earlier, so this terminates.
-        while let Some(start) = hold.straddling_start(split) {
+        while let Some(start) = hold.straddling_start(buf, split) {
             split = whitespace_floor(buf, start);
         }
         split
