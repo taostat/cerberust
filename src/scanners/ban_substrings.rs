@@ -13,9 +13,11 @@
 //! searches the original bytes directly (folding ASCII case only), then redacts
 //! the original text at those offsets so casing outside the match is preserved.
 
+use aho_corasick::{AhoCorasick, BuildError, MatchKind};
+
 use crate::scanner::detect::{resolve_overlaps, Span};
 use crate::scanner::{
-    Direction, Disposition, HoldBack, ScanCtx, ScanResult, Scanner, ScannerId, Verdict,
+    Direction, Disposition, HoldBack, ScanCtx, ScanError, ScanResult, Scanner, ScannerId, Verdict,
 };
 use crate::scanners::redact::redact;
 
@@ -29,7 +31,9 @@ const HIT_RISK: f32 = 1.0;
 #[derive(Debug, Clone)]
 pub struct BanSubstringsScanner {
     substrings: Vec<String>,
-    case_sensitive: bool,
+    /// Built once when case-insensitive matching is enabled. `None` keeps the
+    /// case-sensitive path; a build failure is reported by `scan`.
+    ascii_matcher: Option<Result<AhoCorasick, BuildError>>,
     disposition: Disposition,
     direction: Direction,
 }
@@ -44,7 +48,7 @@ impl BanSubstringsScanner {
     pub fn new(substrings: impl IntoIterator<Item = String>) -> Self {
         Self {
             substrings: substrings.into_iter().collect(),
-            case_sensitive: true,
+            ascii_matcher: None,
             disposition: Disposition::Block,
             direction: Direction::Input,
         }
@@ -64,10 +68,19 @@ impl BanSubstringsScanner {
             .with_direction(Direction::Output)
     }
 
-    /// Match ignoring ASCII case.
+    /// Match ignoring ASCII case. Compiles the configured non-empty needles
+    /// once; if they exceed the automaton's size limits, `scan` reports a
+    /// [`ScanError::Detector`].
     #[must_use]
     pub fn case_insensitive(mut self) -> Self {
-        self.case_sensitive = false;
+        if self.ascii_matcher.is_none() {
+            self.ascii_matcher = Some(
+                AhoCorasick::builder()
+                    .ascii_case_insensitive(true)
+                    .match_kind(MatchKind::Standard)
+                    .build(self.substrings.iter().filter(|needle| !needle.is_empty())),
+            );
+        }
         self
     }
 
@@ -88,52 +101,40 @@ impl BanSubstringsScanner {
     /// The byte spans of every configured substring present in `text`. Spans are
     /// returned for overlap resolution before redaction; for the block path only
     /// their emptiness matters.
-    fn hits(&self, text: &str) -> Vec<Span> {
+    fn hits(&self, text: &str) -> Result<Vec<Span>, ScanError> {
         let mut spans = Vec::new();
+        if let Some(matcher) = &self.ascii_matcher {
+            let matcher = matcher.as_ref().map_err(|error| ScanError::Detector {
+                scanner: Self::ID,
+                reason: error.to_string(),
+            })?;
+            // A global non-overlapping search would suppress hits of other
+            // needles. Enumerate all matches in one O(text.len() + matches)
+            // pass, accepting only leftmost non-overlapping hits per needle.
+            let mut next_start = vec![0; matcher.patterns_len()];
+            for hit in matcher.find_overlapping_iter(text) {
+                let from = &mut next_start[hit.pattern().as_usize()];
+                if hit.start() >= *from {
+                    spans.push(Span::new(hit.start(), hit.end(), BANNED_LABEL, HIT_RISK));
+                    *from = hit.end();
+                }
+            }
+            return Ok(spans);
+        }
+
         for needle in &self.substrings {
             if needle.is_empty() {
                 continue;
             }
             let mut from = 0;
-            while let Some(start) = if self.case_sensitive {
-                text[from..].find(needle).map(|rel| from + rel)
-            } else {
-                find_ascii_case_insensitive(text, needle, from)
-            } {
+            while let Some(rel) = text[from..].find(needle) {
+                let start = from + rel;
                 let end = start + needle.len();
                 spans.push(Span::new(start, end, BANNED_LABEL, HIT_RISK));
                 from = end;
             }
         }
-        spans
-    }
-}
-
-/// Find an ASCII-case-insensitive match without making a lower-cased copy of
-/// the full input. A single search locates the next candidate in either ASCII
-/// case of the first character; separate searches would repeatedly scan the
-/// entire remaining tail if one case is absent. The byte comparison verifies
-/// the remaining needle with the same ASCII-only folding as `to_ascii_lowercase`.
-fn find_ascii_case_insensitive(text: &str, needle: &str, from: usize) -> Option<usize> {
-    let first = needle.chars().next()?;
-    let lower = first.to_ascii_lowercase();
-    let upper = first.to_ascii_uppercase();
-    let needle_bytes = needle.as_bytes();
-    let mut search_from = from;
-
-    loop {
-        let tail = text.get(search_from..)?;
-        let relative = tail.find([lower, upper])?;
-        let start = search_from + relative;
-        let end = start.checked_add(needle_bytes.len())?;
-        if text
-            .as_bytes()
-            .get(start..end)
-            .is_some_and(|candidate| candidate.eq_ignore_ascii_case(needle_bytes))
-        {
-            return Some(start);
-        }
-        search_from = start + first.len_utf8();
+        Ok(spans)
     }
 }
 
@@ -155,7 +156,7 @@ impl Scanner for BanSubstringsScanner {
     }
 
     fn scan<'a>(&self, text: &'a str, ctx: &mut ScanCtx) -> ScanResult<'a> {
-        let spans = resolve_overlaps(self.hits(text));
+        let spans = resolve_overlaps(self.hits(text)?);
         match self.disposition {
             Disposition::Block => Ok(Verdict::detected(
                 text,
@@ -199,7 +200,7 @@ impl Scanner for BanSubstringsScanner {
             let escaped = regex::escape(needle);
             // Case-insensitive bans match either case at stream time, so the DFA
             // must too; the `(?i)` inline flag mirrors the scanner's own folding.
-            patterns.push(if self.case_sensitive {
+            patterns.push(if self.ascii_matcher.is_none() {
                 escaped
             } else {
                 format!("(?i){escaped}")
@@ -262,6 +263,52 @@ mod tests {
     }
 
     #[test]
+    fn case_insensitive_search_handles_a_long_nearly_matching_needle() {
+        // Verifying the whole needle at every first-byte candidate compares
+        // 64 bytes at almost every position. Check results, not wall-clock time.
+        let mut text = "a".repeat(32 * 1024 * 1024);
+        let needle = format!("{}b", "a".repeat(63));
+        let scanner = BanSubstringsScanner::new([needle]).case_insensitive();
+        let verdict = scanner.scan(&text, &mut ScanCtx::new()).unwrap();
+        assert!(verdict.valid);
+        assert_eq!(verdict.text, text);
+
+        // Reuse the scanner and match only at the end of the same long prefix.
+        text.push('B');
+        let verdict = scanner.scan(&text, &mut ScanCtx::new()).unwrap();
+        assert!(!verdict.valid);
+        assert_eq!(verdict.text, text);
+    }
+
+    #[test]
+    fn case_insensitive_hits_are_non_overlapping_per_needle() {
+        for (needles, text, expected) in [
+            (vec!["aba"], "aBaBa", vec![(0, 3)]),
+            (vec!["ab", "bc"], "aBc", vec![(0, 2), (1, 3)]),
+            (vec!["abcd", "bc"], "aBcD", vec![(0, 4), (1, 3)]),
+            (
+                vec!["", "aa", "", "AA"],
+                "aAaAa",
+                vec![(0, 2), (0, 2), (2, 4), (2, 4)],
+            ),
+            (vec![], "abc", vec![]),
+            (vec!["", ""], "abc", vec![]),
+            (vec!["a"], "", vec![]),
+        ] {
+            let scanner = BanSubstringsScanner::new(needles.iter().map(|s| (*s).to_owned()))
+                .case_insensitive();
+            let mut actual: Vec<_> = scanner
+                .hits(text)
+                .unwrap()
+                .into_iter()
+                .map(|span| (span.start, span.end))
+                .collect();
+            actual.sort_unstable();
+            assert_eq!(actual, expected, "{needles:?}, {text:?}");
+        }
+    }
+
+    #[test]
     fn case_insensitive_redaction_preserves_unicode_and_original_casing() {
         let scanner = BanSubstringsScanner::new(["éFoo".to_owned(), "İbAr".to_owned()])
             .case_insensitive()
@@ -277,34 +324,56 @@ mod tests {
         assert_eq!(ctx.vault.len(), 2);
     }
 
+    // A small shared alphabet makes matches and overlaps frequent, while the
+    // arbitrary-char arm still exercises the full Unicode range.
+    fn matching_char() -> impl proptest::strategy::Strategy<Value = char> {
+        proptest::prop_oneof![
+            4 => proptest::sample::select(vec![
+                'a', 'A', 'b', 'B', 'é', 'É', 'İ', 'i', 'ß', 'S', '\0', '🦀',
+            ]),
+            1 => proptest::prelude::any::<char>(),
+        ]
+    }
+
     proptest::proptest! {
         #[test]
-        fn case_insensitive_search_matches_ascii_lowercase_semantics(
-            text_chars in proptest::collection::vec(proptest::prelude::any::<char>(), 0..64),
-            needle_chars in proptest::collection::vec(proptest::prelude::any::<char>(), 0..8),
-            from_offset in 0usize..64,
+        fn hits_preserve_per_needle_find_semantics(
+            text_chars in proptest::collection::vec(matching_char(), 0..64),
+            needle_chars in proptest::collection::vec(
+                proptest::collection::vec(matching_char(), 0..8), 0..8,
+            ),
         ) {
             let text: String = text_chars.into_iter().collect();
-            let needle: String = needle_chars.into_iter().collect();
-            let from = text
-                .char_indices()
-                .map(|(index, _)| index)
-                .chain(std::iter::once(text.len()))
-                .find(|&index| index >= from_offset)
-                .unwrap_or(text.len());
-            let expected = if needle.is_empty() {
-                None
-            } else {
-                let lower_text = text.to_ascii_lowercase();
-                let lower_needle = needle.to_ascii_lowercase();
-                lower_text[from..]
-                    .find(&lower_needle)
-                    .map(|relative| from + relative)
-            };
-            proptest::prop_assert_eq!(
-                find_ascii_case_insensitive(&text, &needle, from),
-                expected,
-            );
+            let needles: Vec<String> = needle_chars
+                .into_iter()
+                .map(|chars| chars.into_iter().collect())
+                .collect();
+            for case_sensitive in [true, false] {
+                let mut scanner = BanSubstringsScanner::new(needles.clone());
+                let mut haystack = text.clone();
+                if !case_sensitive {
+                    scanner = scanner.case_insensitive();
+                    haystack.make_ascii_lowercase();
+                }
+                let mut expected = Vec::new();
+                for needle in &needles {
+                    if needle.is_empty() {
+                        continue;
+                    }
+                    let needle = if case_sensitive {
+                        needle.clone()
+                    } else {
+                        needle.to_ascii_lowercase()
+                    };
+                    for (start, matched) in haystack.match_indices(&needle) {
+                        expected.push(Span::new(start, start + matched.len(), BANNED_LABEL, HIT_RISK));
+                    }
+                }
+                let mut actual = scanner.hits(&text).unwrap();
+                actual.sort_by_key(|span| (span.start, span.end));
+                expected.sort_by_key(|span| (span.start, span.end));
+                proptest::prop_assert_eq!(actual, expected);
+            }
         }
     }
 

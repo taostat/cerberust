@@ -35,7 +35,8 @@ regex-automata = "0.4"
 # only when one of its keywords occurs in the text (gitleaks' own prefilter).
 # One case-insensitive Aho-Corasick pass over ~200 keywords picks the candidate
 # rules instead of running every regex. `aho-corasick` is already in the tree as
-# a `regex` dependency, so this adds no new crate.
+# a `regex` dependency, so this adds no new crate. Substring bans also reuse it
+# for linear-time ASCII-case-insensitive matching without copying the input.
 aho-corasick = "1"
 zeroize = { version = "1.8", features = ["derive"] }
 rand = "0.8"

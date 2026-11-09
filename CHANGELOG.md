@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- Avoid excessive scan time for case-insensitive substring bans with long,
+  nearly matching needles, without copying the input. Per-needle non-overlapping
+  matches and ASCII-only case folding are preserved.
+
 ## [0.2.2]
 
 ### Security
