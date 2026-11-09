@@ -180,25 +180,24 @@ pub trait Scanner: Send + Sync {
 /// scanner itself (the [`Scanner::scan`] surface stays a pure
 /// `text -> Verdict`): the loop times each `scan` and diffs the shared
 /// [`Vault`]'s type-keyed tallies across the call. A transform scanner's
-/// `redacted`/`by_entity_type` is the vault-intern delta; a restore scanner's
-/// `restored` is the vault restore-tally delta; a block scanner's `detections`/
-/// `blocked` come from its [`Verdict`].
+/// `redacted`/`by_entity_type` is the vault redaction-tally delta; a restore
+/// scanner's `restored` is the vault restore-tally delta; a block scanner's
+/// `detections`/`blocked` come from its [`Verdict`].
 #[derive(Debug, Default, Clone, PartialEq)]
 pub struct ScanMetrics {
-    /// Matches or entities this scanner found. For a transform scanner this is
-    /// the number of distinct values redacted; for a block scanner it is `1` on a
-    /// hit, `0` otherwise.
+    /// Units this scanner found. Transform scanners count their redacted units
+    /// (usually distinct values, or characters for a character-removal scanner);
+    /// block scanners report `1` on a hit and `0` otherwise.
     pub detections: u32,
-    /// Distinct values this scanner transformed/replaced (redactions). `0` for a
-    /// pure block scanner, which never rewrites.
+    /// Units this scanner transformed or removed. `0` for a pure block scanner.
     pub redacted: u32,
     /// Sentinels this scanner put back (restore scanners only).
     pub restored: u32,
     /// How many times this scanner blocked: `1` when it returned a [`Block`]
     /// verdict with `valid = false`, else `0`.
     pub blocked: u32,
-    /// Per-entity-**type** redaction counts (`EMAIL`, `AWS_ACCESS_KEY`…). Keys are
-    /// type labels, never values, and the map is empty for a block scanner.
+    /// Per-type redaction counts (`EMAIL`, `AWS_ACCESS_KEY`…). Keys are labels,
+    /// never values, and the map is empty for a block scanner.
     pub by_entity_type: BTreeMap<String, u32>,
     /// Wall-clock time spent in this scanner's [`Scanner::scan`], in microseconds.
     pub latency_us: u64,
@@ -459,7 +458,7 @@ fn replacement_if_changed(current: &str, next: std::borrow::Cow<'_, str>) -> Opt
 /// before a scanner runs so the run loop can diff it afterwards to attribute
 /// redactions and restores to that scanner. Counts and type labels only.
 struct VaultSnapshot {
-    interned: BTreeMap<String, u32>,
+    redacted: BTreeMap<String, u32>,
     restored: BTreeMap<String, u32>,
 }
 
@@ -468,8 +467,8 @@ struct VaultSnapshot {
 /// plaintext.
 fn vault_snapshot(vault: &Vault) -> VaultSnapshot {
     VaultSnapshot {
-        interned: vault
-            .interned_counts()
+        redacted: vault
+            .redacted_counts()
             .map(|(ty, n)| (ty.to_owned(), n))
             .collect(),
         restored: vault
@@ -481,9 +480,9 @@ fn vault_snapshot(vault: &Vault) -> VaultSnapshot {
 
 /// Derive one scanner's content-free [`ScanMetrics`] from its verdict and the
 /// vault deltas across its run. A transform scanner's `redacted`/`by_entity_type`
-/// is the intern-count delta; a restore scanner's `restored` is the restore-tally
-/// delta; a block scanner's `detections`/`blocked` come from its verdict. No
-/// matched content is read — only counts and entity-type labels.
+/// is the redaction-tally delta; a restore scanner's `restored` is the
+/// restore-tally delta; a block scanner's `detections`/`blocked` come from its
+/// verdict. No matched content is read — only counts and entity-type labels.
 fn derive_metrics(
     scanner: &dyn Scanner,
     verdict: &Verdict<'_>,
@@ -491,7 +490,7 @@ fn derive_metrics(
     vault: &Vault,
     latency: std::time::Duration,
 ) -> ScanMetrics {
-    let by_entity_type = positive_deltas(&before.interned, vault.interned_counts());
+    let by_entity_type = positive_deltas(&before.redacted, vault.redacted_counts());
     let redacted: u32 = by_entity_type.values().sum();
     let restored: u32 = positive_deltas(&before.restored, vault.restored_counts())
         .values()

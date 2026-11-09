@@ -32,6 +32,8 @@
 //!   blocking.
 //! - [`TokenLimitScanner`](scanners::TokenLimitScanner) — reject over-budget
 //!   input.
+//! - [`InvisibleTextScanner`](scanners::InvisibleTextScanner) — remove invisible
+//!   instruction-hiding characters while preserving subdivision flag emoji.
 //!
 //! # ML prompt-injection (feature `prompt-injection`)
 //!
@@ -73,8 +75,8 @@ pub use scanner::{
     ScannerStack, Threshold, Vault, Verdict,
 };
 pub use scanners::{
-    BanSubstringsScanner, BanTopicsScanner, PiiScanner, RegexRule, RegexScanner, RestoreScanner,
-    SecretScanner, TokenLimitScanner, Topic,
+    BanSubstringsScanner, BanTopicsScanner, InvisibleTextScanner, PiiScanner, RegexRule,
+    RegexScanner, RestoreScanner, SecretScanner, TokenLimitScanner, Topic,
 };
 #[cfg(feature = "prompt-injection")]
 pub use scanners::{PromptInjectionLoadError, PromptInjectionScanner};
