@@ -118,6 +118,57 @@ Four layers of detection, all emitting spans into the shared redact path:
    are also left intact. The
    character-class and identifier checks run before the entropy calculation.
 
+## Structural crypto formats
+
+These detections require an exact key shape, a checksum, or a named field. A
+transaction hash, block hash, wallet address, Git SHA, or public development
+identifier does not become a secret just because it is long or hexadecimal.
+
+- **GM, Blockmachine, and Taostats** retain their existing entity types and
+  accept both `*_live_` and `*_test_` prefixes followed by exactly 64 lowercase
+  hexadecimal characters.
+- **Bittensor** reports `BITTENSOR_SEED` for a `0x` value with exactly 64 hex
+  characters after a `seed` flag/label or the keyfile's `secretSeed` field.
+  `BITTENSOR_PRIVATE_KEY` covers 64 or 128 hex characters in the keyfile's
+  `privateKey` field, with an optional `0x`. `BITTENSOR_SECRET_PHRASE` redacts
+  the quoted value of `secretPhrase`. These field names follow the
+  [btwallet keyfile source][btwallet-keyfile].
+- **Substrate secret URIs** match a 32-byte hex seed with a hard or soft
+  derivation path, or a valid BIP39 phrase followed by a path. The mnemonic
+  checksum is required. The public `//Alice`-style development URIs and the
+  public Substrate development phrase remain untouched. See the
+  [sp-core SecretUri format](https://docs.rs/sp-core/latest/sp_core/crypto/struct.SecretUri.html).
+- **Ethereum private keys** are exactly 64 hex characters, optionally with
+  `0x`, and must follow a named assignment such as `PRIVATE_KEY`,
+  `DEPLOYER_PRIVATE_KEY`, or `secret_key`. Bare transaction and block hashes
+  are not candidates. The 20 public local development keys from Hardhat's
+  documented test mnemonic are allowlisted; they are intended only for local
+  development. See [Ethereum account documentation](https://ethereum.org/developers/docs/accounts)
+  and [Hardhat network reference](https://v2.hardhat.org/hardhat-network/docs/reference).
+- **Bitcoin WIF** values are Base58Check-decoded and checked for the mainnet or
+  testnet version, 32-byte payload, optional compression marker, and
+  double-SHA-256 checksum. **BIP32 extended private keys** validate the 78-byte
+  payload, private version bytes, private key marker, and checksum for xprv,
+  tprv, and the verified SLIP-132 private prefixes. See the
+  [WIF format](https://en.bitcoin.it/wiki/Wallet_import_format),
+  [BIP32](https://bitcoin.org/bip/32/), and
+  [SLIP-0132](https://github.com/satoshilabs/slips/blob/master/slip-0132.md).
+  Public extended keys such as xpub and tpub and Bitcoin addresses remain
+  unflagged.
+- **Solana keypairs** require a `secretKey`, `keypair`, or `solana` assignment
+  and either a JSON array of exactly 64 byte values or a Base58 value that
+  decodes to exactly 64 bytes. This checks the documented keypair shape without
+  attempting curve validation. See the
+  [Solana restore-keypair guide](https://solana.com/developers/cookbook/wallets/restore-keypair).
+
+Plain 0x transaction and block hashes, 20-byte 0x addresses, SS58 addresses,
+Git SHAs, Substrate development URIs, the public development phrase, xpub/tpub
+values, Bitcoin addresses, and documentation placeholders stay unflagged.
+Provider keys receive a dedicated rule only when a primary source defines the
+complete prefix, length, and character set.
+
+[btwallet-keyfile]: https://raw.githubusercontent.com/opentensor/btwallet/main/src/keyfile.rs
+
 All hits are interned into the vault under a **one-way** policy: redacted on input,
 never restored. Even if you pair the stack with a PII restorer, secrets stay masked,
 because restore is enforced per placeholder and the restorer only owns PII types.

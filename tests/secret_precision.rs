@@ -16,6 +16,7 @@ use cerberust::{ScanCtx, Scanner, SecretScanner};
 use rand::distributions::{Alphanumeric, DistString};
 use rand::rngs::StdRng;
 use rand::SeedableRng;
+use sha2::{Digest, Sha256};
 
 /// Original format-specific entity types that predate the gitleaks port.
 const PRE_EXISTING: &[&str] = &[
@@ -119,7 +120,13 @@ fn provider_keys_and_secret_formats_still_redact() {
     // A test-only JWT with realistic structure and a generated signature.
     let jwt_signature = Alphanumeric.sample_string(&mut rng, 43);
     let jwt = format!(
-        "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMjM0NTY3ODkwIiwibmFtZSI6IkFsaWNlIiwiaWF0IjoxNTE2MjM5MDIyfQ.{jwt_signature}"
+        "{}.{}.{}",
+        "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9",
+        concat!(
+            "eyJzdWIiOiIxMjM0NTY3ODkwIiwibmFtZSI6IkFsaWNlIiwiaWF0IjoxNTE2",
+            "MjM5MDIyfQ"
+        ),
+        jwt_signature
     );
     assert_redacted(&format!("Authorization: Bearer {jwt}"), &jwt, "JWT");
 
@@ -170,11 +177,13 @@ fn bittensor_seed_and_keyfile_fields_are_structural() {
         &seed,
         "BITTENSOR_SEED",
     );
-    assert_type(
-        &format!(r#"{{"secretSeed":"{seed}"}}"#),
-        &seed,
-        "BITTENSOR_SEED",
-    );
+    for field in ["secretSeed", "secret_seed"] {
+        assert_type(
+            &format!(r#"{{"{field}":"{seed}"}}"#),
+            &seed,
+            "BITTENSOR_SEED",
+        );
+    }
 
     let private64 = "b3".repeat(32);
     let private128 = "c4".repeat(64);
@@ -186,6 +195,11 @@ fn bittensor_seed_and_keyfile_fields_are_structural() {
             "BITTENSOR_PRIVATE_KEY",
         );
     }
+    assert_type(
+        &format!(r#"{{"privateKey":"{private64}"}}"#),
+        &private64,
+        "BITTENSOR_PRIVATE_KEY",
+    );
 
     let phrase = std::iter::repeat_n("abandon", 11)
         .chain(["about"])
@@ -204,9 +218,13 @@ fn bittensor_seed_and_keyfile_fields_are_structural() {
         "seed = 0x123456789abc",
         &format!("block hash 0x{}", "d1".repeat(32)),
         "{\"secretSeed\":\"0x1234\"}",
+        &format!("--seed 0x{}g", "a7".repeat(31)),
+        &format!(r#"{{"privateKey":"0x{}g"}}"#, "b3".repeat(31)),
     ] {
         assert_no_new_crypto_type(text);
     }
+
+    assert_no_new_crypto_type(&format!("privateKey {private64}"));
 }
 
 #[test]
@@ -224,19 +242,32 @@ fn ethereum_private_keys_require_named_assignments() {
         let text = format!("export {name}='{key}'");
         assert_type(&text, &key, "ETHEREUM_PRIVATE_KEY");
     }
+    assert_type(
+        &format!(r#"{{"PRIVATE_KEY":"{key}"}}"#),
+        &key,
+        "ETHEREUM_PRIVATE_KEY",
+    );
 
     let bare = format!("0x{}", "e6".repeat(32));
     assert_no_new_crypto_type(&bare);
     assert_no_new_crypto_type(&format!("pk={bare}"));
     assert_no_new_crypto_type(&format!("PRIVATE_KEY=0x{}", "aa".repeat(31)));
+    let bad_charset = format!("PRIVATE_KEY=0x{}g", "aa".repeat(31));
+    assert_no_new_crypto_type(&bad_charset);
 
     for key in hardhat_dev_keys() {
-        let text = format!("PRIVATE_KEY=0x{key}");
-        assert_no_new_crypto_type(&text);
-        assert!(
-            detect_secrets(&text).is_empty(),
-            "public dev key flagged: {text}"
-        );
+        for text in [
+            format!("PRIVATE_KEY=0x{key}"),
+            format!("secret=0x{key}"),
+            format!("api_key=0x{key}"),
+            format!("0x{key}"),
+        ] {
+            assert_no_new_crypto_type(&text);
+            assert!(
+                detect_secrets(&text).is_empty(),
+                "public dev key flagged: {text}"
+            );
+        }
     }
 }
 
@@ -302,15 +333,46 @@ fn bitcoin_private_keys_require_base58check_and_private_versions() {
     let wif = "5HueCGU8rMjxEXxiPuD5BDku4MkFqeZyd4dZ1jvhTVqvbTLvyTJ";
     assert_type(wif, wif, "BITCOIN_WIF");
 
-    let xprv = "xprv9s21ZrQH143K31xYSDQpPDxsXRTUcvj2iNHm5NUtrGiGG5e2DtALGdso3pGz6ssrdK4PFmM8NSpSBHNqPqm55Qn3LqFtT2emdEXVYsCzC2U";
+    let xprv = concat!(
+        "xprv9s21ZrQH143K31xYSDQpPDxsXRTUcvj2iNHm5NUtrGiGG5e2DtALGdso3pGz6ssrdK4PFmM8",
+        "NSpSBHNqPqm55Qn3LqFtT2emdEXVYsCzC2U"
+    );
     assert_type(xprv, xprv, "BIP32_EXTENDED_PRIVATE_KEY");
 
+    for (prefix, version) in [
+        ("xprv", [0x04, 0x88, 0xad, 0xe4]),
+        ("yprv", [0x04, 0x9d, 0x78, 0x78]),
+        ("zprv", [0x04, 0xb2, 0x43, 0x0c]),
+        ("Yprv", [0x02, 0x95, 0xb0, 0x05]),
+        ("Zprv", [0x02, 0xaa, 0x7a, 0x99]),
+        ("tprv", [0x04, 0x35, 0x83, 0x94]),
+        ("uprv", [0x04, 0x4a, 0x4e, 0x28]),
+        ("vprv", [0x04, 0x5f, 0x18, 0xbc]),
+        ("Uprv", [0x02, 0x42, 0x85, 0xb5]),
+        ("Vprv", [0x02, 0x57, 0x50, 0x48]),
+    ] {
+        let encoded = extended_key_with_version(xprv, version);
+        assert!(encoded.starts_with(prefix), "{prefix}: {encoded}");
+        assert_type(&encoded, &encoded, "BIP32_EXTENDED_PRIVATE_KEY");
+    }
+
     for public in [
-        "xpub661MyMwAqRbcFW31YEwpkMuc5THy2PSt5bDMsktWQcFF8syAmRUapSCGu8ED9W6oDMSgv6Zz8idoc4a6mr8BDzTJY47LJhkJ8UB7WEGuduB",
-        "tpubD6NzVbkrYhZ4XJDrzRvuxHEyQaPd1mwwdDofEJwekX18tAdsqeKfxss79AJzg1431FybXg5rfpTrJF4iAhyR7RubberdzEQXiRmXGADH2eA",
+        concat!(
+            "xpub661MyMwAqRbcFW31YEwpkMuc5THy2PSt5bDMsktWQcFF8syAmRUapSCGu8ED9W6oDMSgv6Zz8i",
+            "doc4a6mr8",
+            "BDzTJY47LJhkJ8UB7WEGuduB"
+        ),
+        concat!(
+            "tpubD6NzVbkrYhZ4XJDrzRvuxHEyQaPd1mwwdDofEJwekX18tAdsqeKfxss79AJzg1431FybXg5rfpTrJF4i",
+            "Ahy",
+            "R7RubberdzEQXiRmXGADH2eA"
+        ),
     ] {
         assert_no_new_crypto_type(public);
-        assert!(detect_secrets(public).is_empty(), "public key flagged: {public}");
+        assert!(
+            detect_secrets(public).is_empty(),
+            "public key flagged: {public}"
+        );
     }
 
     let mut bad_wif = wif.as_bytes().to_vec();
@@ -322,6 +384,40 @@ fn bitcoin_private_keys_require_base58check_and_private_versions() {
     };
     let bad_wif = String::from_utf8(bad_wif).unwrap();
     assert_no_new_crypto_type(&bad_wif);
+    assert_eq!(detect_secrets(&bad_wif), []);
+    assert_eq!(detect_secrets(&wif[..wif.len() - 1]), []);
+    let bad_wif_char = format!("{}0{}", &wif[..10], &wif[11..]);
+    assert_eq!(detect_secrets(&bad_wif_char), []);
+
+    for bad_xprv in [
+        xprv[..xprv.len() - 1].to_owned(),
+        format!("{}0{}", &xprv[..10], &xprv[11..]),
+        corrupt_base58_checksum(xprv),
+    ] {
+        assert_eq!(detect_secrets(&bad_xprv), [], "{bad_xprv}");
+    }
+}
+
+fn extended_key_with_version(key: &str, version: [u8; 4]) -> String {
+    let mut payload = bs58::decode(key).into_vec().unwrap();
+    payload.truncate(payload.len() - 4);
+    payload[..4].copy_from_slice(&version);
+    base58check_encode(&payload)
+}
+
+fn corrupt_base58_checksum(key: &str) -> String {
+    let mut bytes = key.as_bytes().to_vec();
+    let last = bytes.len() - 1;
+    bytes[last] = if bytes[last] == b'1' { b'2' } else { b'1' };
+    String::from_utf8(bytes).unwrap()
+}
+
+fn base58check_encode(payload: &[u8]) -> String {
+    let first = Sha256::digest(payload);
+    let second = Sha256::digest(first);
+    let mut data = payload.to_vec();
+    data.extend_from_slice(&second[..4]);
+    bs58::encode(data).into_string()
 }
 
 #[test]
@@ -338,7 +434,11 @@ fn solana_keypair_values_need_a_keyword_and_exact_byte_shape() {
 
     let short: Vec<String> = (0..63).map(|n| n.to_string()).collect();
     assert_no_new_crypto_type(&format!(r#"{{"secretKey":[{}]}}"#, short.join(",")));
+    let too_large = format!(r#"{{"secretKey":[{},999]}}"#, values[..63].join(","));
+    assert_no_new_crypto_type(&too_large);
     assert_no_new_crypto_type(&format!(r#"{{"secretKey":"{encoded}0"}}"#));
+    let too_long = bs58::encode((0..65).collect::<Vec<u8>>()).into_string();
+    assert_no_new_crypto_type(&format!(r#"{{"secretKey":"{too_long}"}}"#));
     assert_no_new_crypto_type(&array);
 }
 

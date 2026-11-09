@@ -128,6 +128,14 @@ fn checksum_ok(indices: &[u16]) -> bool {
     })
 }
 
+pub(crate) fn is_valid_mnemonic(phrase: &str) -> bool {
+    let indices: Option<Vec<u16>> = phrase
+        .split_ascii_whitespace()
+        .map(|word| index_of(word.as_bytes()))
+        .collect();
+    indices.is_some_and(|values| LENGTHS.contains(&values.len()) && checksum_ok(&values))
+}
+
 /// Detect checksum-valid BIP39 mnemonics in `text`.
 #[must_use]
 pub(crate) fn detect(text: &str) -> Vec<Span> {
@@ -154,12 +162,19 @@ pub(crate) fn detect(text: &str) -> Vec<Span> {
 /// overlapping windows are redacted as their union. The cost is occasionally
 /// redacting list words adjacent to a phrase.
 fn select_windows(run: &[(usize, usize, u16)]) -> Vec<(usize, usize)> {
+    if is_public_substrate_dev_phrase(run) {
+        return Vec::new();
+    }
     // A run of exactly a mnemonic's length is redacted whole even when the
     // checksum fails: one wrong or mistyped word leaves the rest brute-forceable.
     if LENGTHS.contains(&run.len()) {
         return vec![(0, run.len() - 1)];
     }
     let indices: Vec<u16> = run.iter().map(|w| w.2).collect();
+    merge_windows(checksum_valid_windows(&indices))
+}
+
+fn checksum_valid_windows(indices: &[u16]) -> Vec<(usize, usize)> {
     let mut windows: Vec<(usize, usize)> = Vec::new();
     for &len in &LENGTHS {
         for first in 0..=indices.len().saturating_sub(len) {
@@ -168,6 +183,10 @@ fn select_windows(run: &[(usize, usize, u16)]) -> Vec<(usize, usize)> {
             }
         }
     }
+    windows
+}
+
+fn merge_windows(mut windows: Vec<(usize, usize)>) -> Vec<(usize, usize)> {
     windows.sort_unstable();
     let mut merged: Vec<(usize, usize)> = Vec::new();
     for (first, last) in windows {
@@ -179,18 +198,43 @@ fn select_windows(run: &[(usize, usize, u16)]) -> Vec<(usize, usize)> {
     merged
 }
 
+fn is_public_substrate_dev_phrase(run: &[(usize, usize, u16)]) -> bool {
+    const PHRASE: [&str; 12] = [
+        "bottom", "drive", "obey", "lake", "curtain", "smoke", "basket", "hold", "race", "lonely",
+        "fit", "walk",
+    ];
+    run.windows(PHRASE.len()).any(|window| {
+        window
+            .iter()
+            .zip(PHRASE)
+            .all(|(word, expected)| words()[usize::from(word.2)].eq_ignore_ascii_case(expected))
+    })
+}
+
 /// Longest trailing run held on a stream. Twice a mnemonic's length, so a
 /// phrase and any list words after it stay together; a longer run (rare outside
 /// wordlist dumps) is held only back to where no redacted window is split.
 const MAX_HELD_WORDS: usize = 48;
 
 /// The byte offset a streaming runner may flush up to without splitting a
-/// possible seed phrase: the start of the run of list words that reaches the
-/// end of `buf` (a final token touching the end is still forming, so the run
-/// before it counts). `buf.len()` when no such run exists.
+/// possible seed phrase. It retains trailing list-word runs and completed
+/// phrases until a unary scan can redact the whole match.
 #[must_use]
 pub(crate) fn hold_floor(buf: &[u8]) -> usize {
+    let (run, matched_floor) = word_run_for_holdback(buf);
+    let Some(&(_, last_end, _)) = run.last() else {
+        return matched_floor.unwrap_or(buf.len());
+    };
+    if !is_separator(&buf[last_end..trailing_token_start(buf, last_end)]) {
+        return matched_floor.unwrap_or(buf.len());
+    }
+    let trailing_floor = trailing_run_floor(&run);
+    matched_floor.map_or(trailing_floor, |floor| floor.min(trailing_floor))
+}
+
+fn word_run_for_holdback(buf: &[u8]) -> (Vec<(usize, usize, u16)>, Option<usize>) {
     let mut run: Vec<(usize, usize, u16)> = Vec::new();
+    let mut matched_floor = None;
     let mut i = 0;
     while i < buf.len() {
         if !buf[i].is_ascii_alphabetic() {
@@ -205,6 +249,7 @@ pub(crate) fn hold_floor(buf: &[u8]) -> usize {
             .last()
             .is_some_and(|&(_, end, _)| is_separator(&buf[end..start]));
         if !joined {
+            remember_match_floor(&mut matched_floor, &run);
             run.clear();
         }
         if i == buf.len() {
@@ -212,27 +257,37 @@ pub(crate) fn hold_floor(buf: &[u8]) -> usize {
             // extends nor breaks the run; the token floor holds it.
             break;
         }
-        match index_of(&buf[start..i]) {
-            Some(index) => run.push((start, i, index)),
-            None => run.clear(),
+        if let Some(index) = index_of(&buf[start..i]) {
+            run.push((start, i, index));
+        } else {
+            remember_match_floor(&mut matched_floor, &run);
+            run.clear();
         }
     }
-    let Some(&(_, last_end, _)) = run.last() else {
-        return buf.len();
-    };
-    if !is_separator(&buf[last_end..trailing_token_start(buf, last_end)]) {
-        return buf.len();
-    }
+    remember_match_floor(&mut matched_floor, &run);
+    (run, matched_floor)
+}
+
+fn trailing_run_floor(run: &[(usize, usize, u16)]) -> usize {
     let mut first = run.len().saturating_sub(MAX_HELD_WORDS);
     if first > 0 {
         // Never cut through a window the unary scan would redact.
-        for (w_first, w_last) in select_windows(&run) {
+        for (w_first, w_last) in select_windows(run) {
             if w_first < first && w_last >= first {
                 first = w_first;
             }
         }
     }
     run[first].0
+}
+
+fn remember_match_floor(floor: &mut Option<usize>, run: &[(usize, usize, u16)]) {
+    // The hold-back DFA does not encode checksum windows, so retain completed
+    // matches until the next unary scan can redact them as whole spans.
+    if let Some((first, _)) = select_windows(run).first() {
+        let start = run[*first].0;
+        *floor = Some(floor.map_or(start, |current| current.min(start)));
+    }
 }
 
 /// Start of the alphabetic token that ends `buf`, or `buf.len()` if `buf` does
@@ -297,9 +352,15 @@ mod tests {
     use super::*;
 
     /// BIP39 test vectors (trezor/python-mnemonic, all-zero and all-0x7f entropy).
-    const ABANDON_12: &str =
-        "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about";
-    const LEGAL_24: &str = "legal winner thank year wave sausage worth useful legal winner thank year wave sausage worth useful legal winner thank year wave sausage worth title";
+    const ABANDON_12: &str = concat!(
+        "abandon abandon abandon abandon abandon abandon ",
+        "abandon abandon abandon abandon abandon about"
+    );
+    const LEGAL_24: &str = concat!(
+        "legal winner thank year wave sausage worth useful ",
+        "legal winner thank year wave sausage worth useful ",
+        "legal winner thank year wave sausage worth title"
+    );
 
     /// Encode `entropy` (16–32 bytes, a multiple of 4) as a BIP39 mnemonic.
     fn encode(entropy: &[u8]) -> Vec<&'static str> {
@@ -350,6 +411,17 @@ mod tests {
     }
 
     #[test]
+    fn hold_floor_holds_prefix_of_public_test_phrase() {
+        let text = b"backup words legal winner thank ";
+        assert_eq!(
+            hold_floor(text),
+            text.windows(5).position(|w| w == b"legal").unwrap()
+        );
+        assert_eq!(hold_floor(b"legal winner"), 0);
+        assert_eq!(hold_floor(b"legal winner "), 0);
+    }
+
+    #[test]
     fn hold_floor_never_splits_a_window_in_a_long_run() {
         // 30 filler list words, then a valid 24-word phrase: 54 words, over the
         // cap, and the phrase must stay held whole.
@@ -373,6 +445,13 @@ mod tests {
             assert_eq!(spans.len(), 1, "{phrase}");
             assert_eq!(&text[spans[0].start..spans[0].end], phrase);
         }
+    }
+
+    #[test]
+    fn public_substrate_development_phrase_is_not_a_seed_finding() {
+        let phrase = "bottom drive obey lake curtain smoke basket hold race lonely fit walk";
+        assert_eq!(detect(phrase), Vec::<Span>::new());
+        assert_eq!(detect(&format!("{phrase}//Alice")), Vec::<Span>::new());
     }
 
     #[test]

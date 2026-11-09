@@ -203,7 +203,9 @@ pub fn detect_structured(text: &str) -> Vec<Span> {
         }
     }
     for m in r.ssn.find_iter(text) {
-        spans.push(Span::new(m.start(), m.end(), "US_SSN", 0.9));
+        if valid_us_ssn(m.as_str()) {
+            spans.push(Span::new(m.start(), m.end(), "US_SSN", 0.9));
+        }
     }
     for m in r.ip.find_iter(text) {
         if is_valid_ipv4(m.as_str()) {
@@ -222,6 +224,19 @@ pub fn detect_structured(text: &str) -> Vec<Span> {
         }
     }
     spans
+}
+
+// SSA excludes these unassigned ranges; see its SSN fact sheet:
+// https://www.ssa.gov/kc/SSAFactSheet--IssuingSSNs.pdf
+fn valid_us_ssn(value: &str) -> bool {
+    let bytes = value.as_bytes();
+    if bytes.len() != 11 || bytes[3] != b'-' || bytes[6] != b'-' {
+        return false;
+    }
+    let area = value[..3].parse::<u16>().unwrap_or(0);
+    let group = value[4..6].parse::<u8>().unwrap_or(0);
+    let serial = value[7..].parse::<u16>().unwrap_or(0);
+    area != 0 && area != 666 && area < 900 && group != 0 && serial != 0
 }
 
 /// E.164 allows at most 15 digits including the country code; fewer than 7
@@ -511,14 +526,150 @@ struct SecretRule {
     re: Regex,
 }
 
+struct ValidatedSecretRule {
+    ty: &'static str,
+    re: Regex,
+    keywords: &'static [&'static str],
+    validator: fn(&str) -> bool,
+    confidence: f32,
+}
+
+type SecretPattern = (
+    &'static str,
+    &'static str,
+    &'static [&'static str],
+    fn(&str) -> bool,
+    f32,
+);
+
+const ADDITIONAL_SECRET_PATTERNS: &[SecretPattern] = &[
+    // Bittensor keyfile fields follow this source:
+    // https://raw.githubusercontent.com/opentensor/btwallet/main/src/keyfile.rs
+    (
+        "BITTENSOR_SEED",
+        concat!(
+            r"(?i)(?:--seed\b|\bsecret[_ ]?seed\b|\bseed\b)",
+            r"\s*(?:[:=]\s*|\s+)(?P<secret>0x[0-9a-f]{64})\b"
+        ),
+        &["--seed", "seed", "secret seed", "secretseed", "secret_seed"],
+        valid_prefixed_seed,
+        0.995,
+    ),
+    (
+        "BITTENSOR_SEED",
+        r#"(?i)"secret[_ ]?seed"\s*:\s*"(?P<secret>0x[0-9a-f]{64})""#,
+        &["secretseed", "secret_seed", "secret seed"],
+        valid_prefixed_seed,
+        0.995,
+    ),
+    (
+        "BITTENSOR_PRIVATE_KEY",
+        concat!(
+            r#"(?i)"privatekey"\s*:\s*"(?P<secret>(?:0x)?"#,
+            r"(?:[0-9a-f]{64}|[0-9a-f]{128})\b)"
+        ),
+        &["privatekey"],
+        valid_bittensor_private_key,
+        0.999,
+    ),
+    (
+        "BITTENSOR_SECRET_PHRASE",
+        r#"(?i)"secretphrase"\s*:\s*"(?P<secret>[^"\r\n]{1,512})""#,
+        &["secretphrase"],
+        is_private_phrase_value,
+        0.999,
+    ),
+    // Substrate SecretUri syntax follows this format reference:
+    // https://docs.rs/sp-core/latest/sp_core/crypto/struct.SecretUri.html
+    (
+        "SUBSTRATE_SECRET_URI",
+        concat!(
+            r"(?-u:\b)(?P<secret>0x[0-9a-fA-F]{64}",
+            r"(?:/{1,2}[A-Za-z0-9_.-]+)+(?:///[A-Za-z0-9_.-]+)?)(?-u:\b)"
+        ),
+        &[],
+        valid_substrate_uri,
+        0.999,
+    ),
+    (
+        "SUBSTRATE_SECRET_URI",
+        concat!(
+            r"(?i)(?P<secret>[a-z]+(?:\s+[a-z]+){11,23}",
+            r"(?:/{1,2}[A-Za-z0-9_.-]+)+(?:///[A-Za-z0-9_.-]+)?)\b"
+        ),
+        &[],
+        valid_substrate_uri,
+        0.999,
+    ),
+    // Ethereum account key shape: https://ethereum.org/developers/docs/accounts
+    (
+        "ETHEREUM_PRIVATE_KEY",
+        concat!(
+            r"(?:\bprivate_key\b|\bprivateKey\b|\bPRIVATE_KEY\b|",
+            r"\bpriv_key\b|\bETH_PRIVATE_KEY\b|\bDEPLOYER_PRIVATE_KEY\b|",
+            r#"\bsecret_key\b)['"]?\s*(?:=\s*|:\s*)['"]?"#,
+            r"(?P<secret>(?:0x)?[0-9a-fA-F]{64})\b"
+        ),
+        &[
+            "private_key",
+            "privatekey",
+            "priv_key",
+            "eth_private_key",
+            "deployer_private_key",
+            "secret_key",
+        ],
+        valid_ethereum_private_key,
+        0.995,
+    ),
+    // WIF payload and checksum: https://en.bitcoin.it/wiki/Wallet_import_format
+    (
+        "BITCOIN_WIF",
+        r"(?-u:\b)(?P<secret>[5KL9c][1-9A-HJ-NP-Za-km-z]{50,51})(?-u:\b)",
+        &[],
+        valid_wif,
+        0.999,
+    ),
+    // BIP32 and SLIP-132 private versions: https://bitcoin.org/bip/32/
+    // https://github.com/satoshilabs/slips/blob/master/slip-0132.md
+    (
+        "BIP32_EXTENDED_PRIVATE_KEY",
+        concat!(
+            r"(?-u:\b)(?P<secret>(?:xprv|yprv|zprv|uprv|vprv|Yprv|Zprv|",
+            r"Uprv|Vprv|tprv)[1-9A-HJ-NP-Za-km-z]{107})(?-u:\b)"
+        ),
+        &[],
+        valid_extended_private_key,
+        0.999,
+    ),
+    // Solana keypair encodings: https://solana.com/developers/cookbook/wallets/restore-keypair
+    (
+        "SOLANA_KEYPAIR",
+        concat!(
+            r#"(?i)\b(?:secretkey|keypair|solana)\b\s*(?:['"]?\s*:\s*|=\s*)"#,
+            r"(?P<secret>\[(?:\s*\d{1,3}\s*,){63}\s*\d{1,3}\s*\])"
+        ),
+        &["secretkey", "keypair", "solana"],
+        valid_solana_array,
+        0.999,
+    ),
+    (
+        "SOLANA_KEYPAIR",
+        concat!(
+            r#"(?i)\b(?:secretkey|keypair|solana)\b\s*(?:['"]?\s*:\s*|=\s*)['"]?"#,
+            r"(?P<secret>[1-9A-HJ-NP-Za-km-z]{1,90})\b"
+        ),
+        &["secretkey", "keypair", "solana"],
+        valid_solana_base58,
+        0.999,
+    ),
+];
+
 /// The vendor secret `(type, pattern)` source list — the single source both the
 /// compiled detector regexes and the streaming hold-back DFA read.
-const SECRET_PATTERNS: [(&str, &str); 11] = [
+const SECRET_PATTERNS: [(&str, &str); 14] = [
     ("AWS_ACCESS_KEY", r"AKIA[0-9A-Z]{16}"),
-    // GM, Blockmachine and Taostats API keys: `gm_live_` / `bm_live_` /
-    // `ts_live_` followed by 64 lowercase hex characters. The entropy backstop
-    // does not flag them (not pure hex, and hex entropy stays low), so they need
-    // an explicit rule.
+    // These live and test keys carry 64 lowercase hex characters, which do not
+    // reach the entropy backstop.
     ("GM_API_KEY", r"(?-u:\b)gm_live_[0-9a-f]{64}(?-u:\b)"),
     (
         "BLOCKMACHINE_API_KEY",
@@ -527,8 +678,17 @@ const SECRET_PATTERNS: [(&str, &str); 11] = [
     // Taostats API keys: `tao-<uuid>:<8 hex>`, and `ts_live_` keys.
     (
         "TAOSTATS_API_KEY",
-        r"(?-u:\b)(?:tao-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}:[0-9a-f]{8}|ts_live_[0-9a-f]{64})(?-u:\b)",
+        concat!(
+            r"(?-u:\b)(?:tao-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-",
+            r"[0-9a-f]{4}-[0-9a-f]{12}:[0-9a-f]{8}|ts_live_[0-9a-f]{64})(?-u:\b)"
+        ),
     ),
+    ("GM_API_KEY", r"(?-u:\b)gm_test_[0-9a-f]{64}(?-u:\b)"),
+    (
+        "BLOCKMACHINE_API_KEY",
+        r"(?-u:\b)bm_test_[0-9a-f]{64}(?-u:\b)",
+    ),
+    ("TAOSTATS_API_KEY", r"(?-u:\b)ts_test_[0-9a-f]{64}(?-u:\b)"),
     ("GITHUB_TOKEN", r"ghp_[A-Za-z0-9]{36}"),
     ("STRIPE_KEY", r"sk_live_[A-Za-z0-9]{24,}"),
     ("OPENAI_KEY", r"sk-[A-Za-z0-9]{20,}"),
@@ -559,7 +719,10 @@ const CREDENTIAL_PATTERNS: [&str; 2] = [
         r"|(?:str|string|int|integer|float|bool|boolean|bytes)",
         r"|[a-z_][a-z0-9_.]*(?:\[[a-z0-9_. ,|\[\]]+\]|<[a-z0-9_:<> ,]+>)",
         r")[ \t]*=[ \t]*|\s*(?:(?P<colon>:)|=)\s*)",
-        r#"(?:(?:os\.getenv|os\.environ\.get|getenv)\s*\(\s*(?:"[^"\r\n]*"|'[^'\r\n]*')\s*,\s*(?:default\s*=\s*)?)?"#,
+        concat!(
+            r#"(?:(?:os\.getenv|os\.environ\.get|getenv)\s*\(\s*(?:"#,
+            r#"[^"\r\n]*"|'[^'\r\n]*')\s*,\s*(?:default\s*=\s*)?)?"#
+        ),
         r#"(?:"(?P<double>(?:\\[^\r\n]|[^"\\\r\n])*\\?)(?:"|[\r\n]|$)"#,
         r"|'(?P<single>(?:\\[^\r\n]|[^'\\\r\n])*\\?)(?:'|[\r\n]|$)",
         // Keep a possible expression through spaces, stopping at quotes or the
@@ -579,6 +742,11 @@ pub fn secret_pattern_sources() -> Vec<String> {
     SECRET_PATTERNS
         .iter()
         .map(|(_, p)| (*p).to_owned())
+        .chain(
+            ADDITIONAL_SECRET_PATTERNS
+                .iter()
+                .map(|(_, pattern, _, _, _)| (*pattern).to_owned()),
+        )
         .chain(CREDENTIAL_PATTERNS.iter().map(|p| (*p).to_owned()))
         .chain(gitleaks::pattern_sources())
         .collect()
@@ -594,6 +762,24 @@ fn secret_rules() -> &'static [SecretRule] {
             }
         }
         rules
+    })
+}
+
+fn validated_secret_rules() -> &'static [ValidatedSecretRule] {
+    static RULES: OnceLock<Vec<ValidatedSecretRule>> = OnceLock::new();
+    RULES.get_or_init(|| {
+        ADDITIONAL_SECRET_PATTERNS
+            .iter()
+            .map(
+                |(ty, pattern, keywords, validator, confidence)| ValidatedSecretRule {
+                    ty,
+                    re: structured_rule(pattern),
+                    keywords,
+                    validator: *validator,
+                    confidence: *confidence,
+                },
+            )
+            .collect()
     })
 }
 
@@ -628,6 +814,7 @@ pub fn detect_secrets(text: &str) -> Vec<Span> {
             spans.push(Span::new(m.start(), m.end(), rule.ty, 0.99));
         }
     }
+    detect_validated_secrets(text, &mut spans);
     detect_labelled_secrets(text, &mut spans);
     for caps in url_credential_rule().captures_iter(text) {
         if let Some(v) = caps.get(1) {
@@ -637,6 +824,223 @@ pub fn detect_secrets(text: &str) -> Vec<Span> {
     spans.extend(entropy_backstop(text));
     spans
 }
+
+fn detect_validated_secrets(text: &str, spans: &mut Vec<Span>) {
+    let lower = text.to_ascii_lowercase();
+    for rule in validated_secret_rules() {
+        if !rule.keywords.is_empty() && !rule.keywords.iter().any(|word| lower.contains(word)) {
+            continue;
+        }
+        for caps in rule.re.captures_iter(text) {
+            let Some(value) = caps.name("secret") else {
+                continue;
+            };
+            if (rule.validator)(value.as_str()) {
+                spans.push(Span::new(
+                    value.start(),
+                    value.end(),
+                    rule.ty,
+                    rule.confidence,
+                ));
+            }
+        }
+    }
+}
+
+fn valid_prefixed_seed(value: &str) -> bool {
+    value
+        .strip_prefix("0x")
+        .or_else(|| value.strip_prefix("0X"))
+        .is_some_and(|hex| hex.len() == 64 && hex.bytes().all(|byte| byte.is_ascii_hexdigit()))
+}
+
+fn valid_bittensor_private_key(value: &str) -> bool {
+    let hex = value
+        .strip_prefix("0x")
+        .or_else(|| value.strip_prefix("0X"))
+        .unwrap_or(value);
+    matches!(hex.len(), 64 | 128) && hex.bytes().all(|byte| byte.is_ascii_hexdigit())
+}
+
+fn is_private_phrase_value(value: &str) -> bool {
+    !is_public_substrate_dev_phrase(value) && !is_non_secret_assignment_value(value, true, false)
+}
+
+fn valid_substrate_uri(value: &str) -> bool {
+    let Some(path_start) = value.find('/') else {
+        return false;
+    };
+    let seed = value[..path_start].trim_end();
+    if seed.starts_with("0x") || seed.starts_with("0X") {
+        return valid_prefixed_seed(seed);
+    }
+    bip39::is_valid_mnemonic(seed) && !is_public_substrate_dev_phrase(seed)
+}
+
+fn is_public_substrate_dev_phrase(value: &str) -> bool {
+    const PHRASE: [&str; 12] = [
+        "bottom", "drive", "obey", "lake", "curtain", "smoke", "basket", "hold", "race", "lonely",
+        "fit", "walk",
+    ];
+    let words = value.split_ascii_whitespace();
+    words.count() == PHRASE.len()
+        && value
+            .split_ascii_whitespace()
+            .zip(PHRASE)
+            .all(|(word, expected)| word.eq_ignore_ascii_case(expected))
+}
+
+fn valid_ethereum_private_key(value: &str) -> bool {
+    let hex = value.strip_prefix("0x").unwrap_or(value);
+    hex.len() == 64
+        && hex.bytes().all(|byte| byte.is_ascii_hexdigit())
+        && !is_public_hardhat_dev_key(value)
+}
+
+fn is_public_hardhat_dev_key(value: &str) -> bool {
+    let hex = value
+        .strip_prefix("0x")
+        .or_else(|| value.strip_prefix("0X"))
+        .unwrap_or(value);
+    HARDHAT_PUBLIC_DEV_KEYS
+        .iter()
+        .any(|key| hex.eq_ignore_ascii_case(key))
+}
+
+fn contains_public_hardhat_dev_key(value: &str) -> bool {
+    let lower = value.to_ascii_lowercase();
+    HARDHAT_PUBLIC_DEV_KEYS
+        .iter()
+        .any(|key| lower.contains(key))
+}
+
+fn valid_solana_array(value: &str) -> bool {
+    let Some(items) = value.strip_prefix('[').and_then(|v| v.strip_suffix(']')) else {
+        return false;
+    };
+    let values: Vec<_> = items.split(',').map(str::trim).collect();
+    values.len() == 64 && values.iter().all(|item| item.parse::<u8>().is_ok())
+}
+
+fn valid_solana_base58(value: &str) -> bool {
+    bs58::decode(value)
+        .into_vec()
+        .is_ok_and(|bytes| bytes.len() == 64)
+}
+
+fn valid_wif(value: &str) -> bool {
+    let Some(payload) = decode_base58check_payload(value) else {
+        return false;
+    };
+    matches!(payload.as_slice(), [0x80 | 0xef, ..])
+        && (payload.len() == 33 || (payload.len() == 34 && payload[33] == 1))
+}
+
+fn valid_extended_private_key(value: &str) -> bool {
+    let Some(payload) = decode_base58check_payload(value) else {
+        return false;
+    };
+    payload.len() == 78
+        && payload.get(45) == Some(&0)
+        && BIP32_PRIVATE_VERSIONS.iter().any(|(prefix, version)| {
+            value.starts_with(prefix) && payload.get(..4) == Some(&version[..])
+        })
+}
+
+fn decode_base58check_payload(value: &str) -> Option<Vec<u8>> {
+    let mut decoded = bs58::decode(value).into_vec().ok()?;
+    if decoded.len() < 5 {
+        return None;
+    }
+    let checksum_start = decoded.len() - 4;
+    let first = Sha256::digest(&decoded[..checksum_start]);
+    let second = Sha256::digest(first);
+    if decoded[checksum_start..] != second[..4] {
+        return None;
+    }
+    decoded.truncate(checksum_start);
+    Some(decoded)
+}
+
+fn valid_extended_public_key(value: &str) -> bool {
+    let Some(payload) = decode_base58check_payload(value) else {
+        return false;
+    };
+    payload.len() == 78
+        && matches!(payload.get(45), Some(2 | 3))
+        && BIP32_PUBLIC_VERSIONS.iter().any(|(prefix, version)| {
+            value.starts_with(prefix) && payload.get(..4) == Some(&version[..])
+        })
+}
+
+fn is_wif_shape(value: &str) -> bool {
+    (50..=53).contains(&value.len())
+        && value
+            .as_bytes()
+            .first()
+            .is_some_and(|first| b"5KL9c".contains(first))
+}
+
+fn is_extended_key_shape(value: &str) -> bool {
+    (109..=113).contains(&value.len())
+        && (BIP32_PRIVATE_VERSIONS
+            .iter()
+            .any(|(prefix, _)| value.starts_with(prefix))
+            || BIP32_PUBLIC_VERSIONS
+                .iter()
+                .any(|(prefix, _)| value.starts_with(prefix)))
+}
+
+const BIP32_PRIVATE_VERSIONS: &[(&str, [u8; 4])] = &[
+    ("xprv", [0x04, 0x88, 0xad, 0xe4]),
+    ("yprv", [0x04, 0x9d, 0x78, 0x78]),
+    ("zprv", [0x04, 0xb2, 0x43, 0x0c]),
+    ("Yprv", [0x02, 0x95, 0xb0, 0x05]),
+    ("Zprv", [0x02, 0xaa, 0x7a, 0x99]),
+    ("tprv", [0x04, 0x35, 0x83, 0x94]),
+    ("uprv", [0x04, 0x4a, 0x4e, 0x28]),
+    ("vprv", [0x04, 0x5f, 0x18, 0xbc]),
+    ("Uprv", [0x02, 0x42, 0x85, 0xb5]),
+    ("Vprv", [0x02, 0x57, 0x50, 0x48]),
+];
+
+const BIP32_PUBLIC_VERSIONS: &[(&str, [u8; 4])] = &[
+    ("xpub", [0x04, 0x88, 0xb2, 0x1e]),
+    ("ypub", [0x04, 0x9d, 0x7c, 0xb2]),
+    ("zpub", [0x04, 0xb2, 0x47, 0x46]),
+    ("Ypub", [0x02, 0x95, 0xb4, 0x3f]),
+    ("Zpub", [0x02, 0xaa, 0x7e, 0xd3]),
+    ("tpub", [0x04, 0x35, 0x87, 0xcf]),
+    ("upub", [0x04, 0x4a, 0x52, 0x62]),
+    ("vpub", [0x04, 0x5f, 0x1c, 0xf6]),
+    ("Upub", [0x02, 0x42, 0x89, 0xef]),
+    ("Vpub", [0x02, 0x57, 0x54, 0x83]),
+];
+
+// Public local-only keys derived from Hardhat's documented development
+// mnemonic: https://v2.hardhat.org/hardhat-network/docs/reference
+const HARDHAT_PUBLIC_DEV_KEYS: &[&str] = &[
+    "ac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80",
+    "59c6995e998f97a5a0044966f0945389dc9e86dae88c7a8412f4603b6b78690d",
+    "5de4111afa1a4b94908f83103eb1f1706367c2e68ca870fc3fb9a804cdab365a",
+    "7c852118294e51e653712a81e05800f419141751be58f605c371e15141b007a6",
+    "47e179ec197488593b187f80a00eb0da91f1b9d0b13f8733639f19c30a34926a",
+    "8b3a350cf5c34c9194ca85829a2df0ec3153be0318b5e2d3348e872092edffba",
+    "92db14e403b83dfe3df233f83dfa3a0d7096f21ca9b0d6d6b8d88b2b4ec1564e",
+    "4bbbf85ce3377467afe5d46f804f221813b2bb87f24d81f60f1fcdbf7cbf4356",
+    "dbda1821b80551c9d65939329250298aa3472ba22feea921c0cf5d620ea67b97",
+    "2a871d0798f97d79848a013d4936a73bf4cc922c825d33c1cf7073dff6d409c6",
+    "f214f2b2cd398c806f84e317254e0f0b801d0643303237d97a22a48e01628897",
+    "701b615bbdfb9de65240bc28bd21bbc0d996645a3dd57e7b12bc2bdf6f192c82",
+    "a267530f49f8280200edf313ee7af6b827f2a8bce2897751d06a843f644967b1",
+    "47c99abed3324a2707c28affff1267e45918ec8c3f20b8aa892e8b065d2942dd",
+    "c526ee95bf44d8fc405a158bb884d9d1238d99f0612e9f33d006bb0789009aaa",
+    "8166f546bab6da521a8369cab06c5d2b9e46670292d85c875ee9ec20e84ffb61",
+    "ea6c44ac03bff858b476bba40716402b03e41b8e97e276d1baec7c37d42484a0",
+    "689af8efa8c651a91ad287602527f3af2fe9f6501a7ac4b061667b5a93e037fd",
+    "de9be858da4a475276426320d5e9262ecfc3ba460bfac56360bfa6c4c28b4ee0",
+    "df57089febbacf7ba0bc227dafbffa9fc08a93fdc68e1e42411a14efcf23656e",
+];
 
 fn detect_labelled_secrets(text: &str, spans: &mut Vec<Span>) {
     let mut scopes = vec![(0..text.len(), false)];
@@ -681,6 +1085,7 @@ fn detect_labelled_secrets(text: &str, spans: &mut Vec<Span>) {
                 };
                 if value.len() >= 6
                     && !is_non_secret_assignment_value(value, quoted.is_some(), annotation)
+                    && !is_public_hardhat_dev_key(value)
                     && expression.is_none()
                 {
                     spans.push(Span::new(start, start + value.len(), "SECRET", 0.9));
@@ -861,7 +1266,7 @@ fn is_public_identifier_candidate(s: &str) -> bool {
     // Never strip characters in the opaque-token alphabet: '_<address>_'
     // can itself be a credential. Only strip surrounding prose punctuation.
     let bare = s.trim_matches(['"', '\'', '`', '(', ')', '[', ']', '{', '}', ',', ';']);
-    if is_ss58_address(bare) || is_base58check_address(bare) {
+    if is_ss58_address(bare) || is_base58check_address(bare) || valid_extended_public_key(bare) {
         return true;
     }
     if !s
@@ -878,7 +1283,17 @@ fn is_public_identifier_candidate(s: &str) -> bool {
             .split('/')
             .filter(|part| !part.is_empty())
             .all(|part| part.len() <= 16);
-    simple_path && (is_ss58_address(address) || is_base58check_address(address))
+    simple_path
+        && (is_ss58_address(address)
+            || is_base58check_address(address)
+            || valid_extended_public_key(address))
+}
+
+fn is_entropy_exempt_token(value: &str) -> bool {
+    is_public_identifier_candidate(value)
+        || is_wif_shape(value)
+        || is_extended_key_shape(value)
+        || contains_public_hardhat_dev_key(value)
 }
 
 /// Keyword values that are code expressions, type annotations, indirections,
@@ -950,9 +1365,11 @@ fn is_non_secret_assignment_value(value: &str, quoted: bool, annotation: bool) -
 fn assignment_reference_rule() -> &'static Regex {
     static RE: OnceLock<Regex> = OnceLock::new();
     RE.get_or_init(|| {
-        structured_rule(
-            r"^(?:\$[A-Za-z_][A-Za-z0-9_]*|\$\{[A-Za-z_][A-Za-z0-9_]*\}|%[A-Z_][A-Z0-9_]*%|\{\{[ \t]*[A-Za-z_][A-Za-z0-9_.]*[ \t]*\}\})$",
-        )
+        structured_rule(concat!(
+            r"^(?:\$[A-Za-z_][A-Za-z0-9_]*|\$\{[A-Za-z_][A-Za-z0-9_]*\}|",
+            r"%[A-Z_][A-Z0-9_]*%|\{\{[ \t]*[A-Za-z_][A-Za-z0-9_.]*",
+            r"[ \t]*\}\})$"
+        ))
     })
 }
 
@@ -1088,7 +1505,7 @@ fn entropy_backstop(text: &str) -> Vec<Span> {
             && is_base64ish(tok)
             && !is_hexish(tok)
             && has_character_class_diversity(tok)
-            && !is_public_identifier_candidate(tok)
+            && !is_entropy_exempt_token(tok)
             && shannon_entropy(tok) >= 4.5
         {
             spans.push(Span::new(start, start + len, "SECRET", 0.7));
@@ -1194,7 +1611,14 @@ mod tests {
                 for checksum_len in checksums {
                     for byte in [0, 0xa7] {
                         let address = ss58_fixture(prefix, &vec![byte; payload_len], checksum_len);
-                        assert!(is_ss58_address(&address), "prefix={prefix:?} payload={payload_len} checksum={checksum_len}: {address}");
+                        assert!(
+                            is_ss58_address(&address),
+                            concat!("prefix={:?} payload={} ", "checksum={}: {}"),
+                            prefix,
+                            payload_len,
+                            checksum_len,
+                            address
+                        );
                         assert_eq!(entropy_backstop(&address), []);
                         let mut decoded = bs58::decode(&address).into_vec().unwrap();
                         *decoded.last_mut().unwrap() ^= 1;
@@ -1407,6 +1831,45 @@ mod tests {
         assert!(detect_structured("123-45-6789")
             .iter()
             .any(|span| span.ty == "US_SSN"));
+    }
+
+    #[test]
+    fn keyword_seed_pattern_captures_after_flag() {
+        let value = format!("0x{}", "a7".repeat(32));
+        let text = format!("btcli wallet create --seed {value}");
+        let rule = validated_secret_rules()
+            .iter()
+            .find(|rule| rule.ty == "BITTENSOR_SEED")
+            .unwrap();
+        let capture = rule.re.captures(&text).unwrap();
+        assert_eq!(capture.name("secret").unwrap().as_str(), value);
+        assert!((rule.validator)(capture.name("secret").unwrap().as_str()));
+        let text = format!(r#"{{"secretSeed":"{value}"}}"#);
+        let rule = validated_secret_rules()
+            .iter()
+            .find(|rule| rule.re.as_str().starts_with("(?i)\"secret[_ ]?seed\""))
+            .unwrap();
+        let capture = rule.re.captures(&text).unwrap();
+        assert_eq!(capture.name("secret").unwrap().as_str(), value);
+    }
+
+    #[test]
+    fn additional_secret_patterns_compile_with_secret_captures() {
+        for (_, pattern, _, _, _) in ADDITIONAL_SECRET_PATTERNS {
+            let regex = Regex::new(pattern).unwrap();
+            assert!(regex.capture_names().flatten().any(|name| name == "secret"));
+        }
+    }
+
+    #[test]
+    fn extended_public_test_vector_is_valid_and_remains_public() {
+        let xpub = concat!(
+            "xpub661MyMwAqRbcFW31YEwpkMuc5THy2PSt5bDMsktWQcFF8syAmRUapSCGu8ED9W6oDMSgv6Zz8i",
+            "doc4a6mr8BDzTJY47LJhkJ8UB7WEGuduB"
+        );
+        assert!(valid_extended_public_key(xpub));
+        assert!(is_public_identifier_candidate(&format!("/wallet/{xpub}")));
+        assert_eq!(detect_secrets(xpub), Vec::<Span>::new());
     }
 
     #[test]

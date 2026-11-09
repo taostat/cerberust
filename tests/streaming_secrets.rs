@@ -140,7 +140,11 @@ fn structural_crypto_secrets_never_leak_at_any_chunk_size() {
     let suri = format!("0x{}//hard", "91".repeat(32));
     // Public format vectors documented by Bitcoin Wiki and BIP32.
     let wif = "5HueCGU8rMjxEXxiPuD5BDku4MkFqeZyd4dZ1jvhTVqvbTLvyTJ".to_owned();
-    let xprv = "xprv9s21ZrQH143K31xYSDQpPDxsXRTUcvj2iNHm5NUtrGiGG5e2DtALGdso3pGz6ssrdK4PFmM8NSpSBHNqPqm55Qn3LqFtT2emdEXVYsCzC2U".to_owned();
+    let xprv = concat!(
+        "xprv9s21ZrQH143K31xYSDQpPDxsXRTUcvj2iNHm5NUtrGiGG5e2DtALGdso3pGz6ssrdK4PFmM8",
+        "NSpSBHNqPqm55Qn3LqFtT2emdEXVYsCzC2U"
+    )
+    .to_owned();
     let ai_key = format!("sk-ant-api03-{}AA", take(ALNUM, 93));
     let cases = [
         (
@@ -196,7 +200,11 @@ fn positive_corpus() -> Vec<String> {
     let abandon: Vec<&str> = std::iter::repeat_n("abandon", 11)
         .chain(["about"])
         .collect();
-    let legal = "legal winner thank year wave sausage worth useful legal winner thank year wave sausage worth useful legal winner thank year wave sausage worth title";
+    let legal = concat!(
+        "legal winner thank year wave sausage worth useful ",
+        "legal winner thank year wave sausage worth useful ",
+        "legal winner thank year wave sausage worth title"
+    );
     let airtable = format!("pat{}.{}", take(ALNUM, 14), &HEX[..64]);
     let facebook = format!(
         "{}|{}",
