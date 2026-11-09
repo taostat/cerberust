@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `Scanner::needs_prompt()` (default `true`) declares whether a scanner reads
+  `ScanCtx::prompt`. Built-in scanners return `false`.
+
+### Changed
+
+- `ScannerStack::run_input` stores `ScanCtx::prompt` only when an input or
+  output scanner in the stack needs it; otherwise the prompt is cleared, so a
+  stack of built-in scanners no longer keeps a copy of the last input.
+- Scanner stacks copy the text only when a scanner changes it, and the
+  banned-substring and secret scanners no longer make scratch copies of the
+  input. Detection and redaction output are unchanged.
+- The optional `prompt-injection` feature pins `ort` to `=2.0.0-rc.12`.
+
 ### Fixed
 
 - Avoid excessive scan time for case-insensitive substring bans with long,
