@@ -200,3 +200,26 @@ fn streaming_output_equals_unary_on_positive_corpus() {
         }
     }
 }
+
+#[test]
+fn labelled_literals_and_defaults_never_leak_across_chunks() {
+    let secret = "private-default-9x7k2m";
+    for text in [
+        format!("password: Optional[str] = '{secret}'\n"),
+        format!("password: str = os.getenv('DB_PASSWORD', '{secret}')\n"),
+        format!("password = os.environ.get('DB_PASSWORD', default='{secret}')\n"),
+        format!("password = '{secret}(with$punctuation)'\n"),
+    ] {
+        let mut unary_stack = stack();
+        let unary = normalize(&unary_stack.run_output(&text).unwrap());
+        assert!(unary.contains("[REDACTED_SECRET_"));
+        for chunk_len in 1..=8 {
+            let emitted = stream(&text, chunk_len, secret);
+            assert_eq!(
+                normalize(&emitted),
+                unary,
+                "chunk_len={chunk_len}: {text:?}"
+            );
+        }
+    }
+}

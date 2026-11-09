@@ -88,9 +88,12 @@ Four layers of detection, all emitting spans into the shared redact path:
 2. **Labelled secrets** — `password=…`, `api_key: …`, `token = …`, and
    `scheme://user:password@host` URL credentials. Here it redacts **just the
    value**, not the label, so `password=hunter2` becomes `password=[REDACTED…]`.
-   Values shaped like type annotations, function calls, attribute references,
-   environment-variable/template references, or common placeholders are left
-   intact. For example, `password: Optional[str] = None`,
+   Unquoted type annotations, function calls and attribute references, plus
+   complete environment/template references and exact common placeholders,
+   are left intact. Quoted literals are still scanned even when their contents
+   resemble code. Typed assignments and literal defaults in `os.getenv` and
+   `os.environ.get` redact the value while preserving the surrounding code.
+   For example, `password: Optional[str] = None`,
    `token = self.tokenizer(text)`, `password=${DB_PASSWORD}` and
    `token=YOUR_TOKEN` do not produce labelled-secret redactions.
 
@@ -110,8 +113,9 @@ Four layers of detection, all emitting spans into the shared redact path:
    uppercase letters, digits and symbols before its Shannon entropy is measured.
    This keeps pure-hex hashes and lowercase/alphanumeric identifiers out of the
    generic `SECRET` path; pure-hex credentials need a format-specific rule.
-   Checksum-valid SS58 AccountId addresses and Bitcoin P2PKH/P2SH Base58Check
-   addresses, plus syntactically valid SRI digests, are also left intact. The
+   Checksum-valid SS58 account indices and 32/33-byte public-key addresses,
+   Bitcoin P2PKH/P2SH Base58Check addresses, and syntactically valid SRI digests
+   are also left intact. The
    character-class and identifier checks run before the entropy calculation.
 
 All hits are interned into the vault under a **one-way** policy: redacted on input,

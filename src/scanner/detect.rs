@@ -548,7 +548,22 @@ const SECRET_PATTERNS: [(&str, &str); 11] = [
 
 /// The labelled `key=value` and URL-credential source patterns.
 const CREDENTIAL_PATTERNS: [&str; 2] = [
-    r#"(?i)\b(?:password|passwd|pwd|secret|api[_-]?key|token|access[_-]?key)\b\s*[:=]\s*["']?([^\s"'&]{6,})"#,
+    // Keep types and literal environment defaults in the same pattern used by
+    // the streaming DFA, so their assignment context cannot flush too early.
+    concat!(
+        r"(?i)\b(?:password|passwd|pwd|secret|api[_-]?key|token|access[_-]?key)\b",
+        // A type needs recognizable syntax, or whitespace before '='. An
+        // arbitrary alphanumeric value ending in '=' may be a Base64 secret.
+        r"(?:[ \t]*:[ \t]*(?:",
+        r"[a-z_][a-z0-9_.<>\[\], |?:]*[ \t]+",
+        r"|(?:str|string|int|integer|float|bool|boolean|bytes)",
+        r"|[a-z_][a-z0-9_.]*(?:\[[a-z0-9_. ,|\[\]]+\]|<[a-z0-9_:<> ,]+>)",
+        r")[ \t]*=[ \t]*|\s*(?:(?P<colon>:)|=)\s*)",
+        r#"(?:(?:os\.getenv|os\.environ\.get|getenv)\(\s*(?:"[^"\r\n]*"|'[^'\r\n]*')\s*,\s*(?:default\s*=\s*)?)?"#,
+        r#"(?:"(?P<double>(?:\\[^\r\n]|[^"\\\r\n])*)(?:"|$)"#,
+        r"|'(?P<single>(?:\\[^\r\n]|[^'\\\r\n])*)(?:'|$)",
+        r#"|(?P<bare>[^\s"'&]+))"#,
+    ),
     r"[a-z][a-z0-9+.\-]*://[^\s:/@]+:([^\s/@]+)@",
 ];
 
@@ -581,7 +596,7 @@ fn secret_rules() -> &'static [SecretRule] {
 }
 
 /// `key = value` / `key: value` pairs whose key names a credential. The value
-/// span (group 1), not the label, is redacted.
+/// span (named quoted/bare groups), not the label or type, is redacted.
 fn labelled_secret_rule() -> &'static Regex {
     static RE: OnceLock<Regex> = OnceLock::new();
     RE.get_or_init(|| structured_rule(CREDENTIAL_PATTERNS[0]))
@@ -612,9 +627,21 @@ pub fn detect_secrets(text: &str) -> Vec<Span> {
         }
     }
     for caps in labelled_secret_rule().captures_iter(text) {
-        if let Some(v) = caps.get(1) {
-            if !is_non_secret_assignment_value(v.as_str()) {
-                spans.push(Span::new(v.start(), v.end(), "SECRET", 0.9));
+        let quoted = caps.name("double").or_else(|| caps.name("single"));
+        if let Some(v) = quoted.or_else(|| caps.name("bare")) {
+            let value = if quoted.is_some() {
+                v.as_str()
+            } else {
+                v.as_str().trim_end_matches([',', ';'])
+            };
+            if value.len() >= 6
+                && !is_non_secret_assignment_value(
+                    value,
+                    quoted.is_some(),
+                    caps.name("colon").is_some(),
+                )
+            {
+                spans.push(Span::new(v.start(), v.start() + value.len(), "SECRET", 0.9));
             }
         }
     }
@@ -678,29 +705,48 @@ fn has_character_class_diversity(s: &str) -> bool {
     classes.into_iter().filter(|present| *present).count() >= 3
 }
 
-/// A valid SS58 `AccountId` address (one- or two-byte network prefix, 32-byte
-/// account id, two-byte Blake2b-512 checksum).
+/// Validate SS58 network prefixes, payload lengths and the Blake2b-512
+/// checksum. Account indices have 1/2/4/8 payload bytes and up to that many
+/// checksum bytes; 32/33-byte public keys always use a two-byte checksum.
 fn is_ss58_address(s: &str) -> bool {
-    if !(45..=50).contains(&s.len()) {
+    // Bound decoding work, but allow leading zero bytes (Base58 '1's).
+    if !(3..=51).contains(&s.len()) {
         return false;
     }
     let Ok(decoded) = bs58::decode(s).into_vec() else {
         return false;
     };
-    let prefix_len = match decoded.len() {
-        35 if decoded[0] < 64 => 1,
-        36 if (decoded[0] & 0b1100_0000) == 0b0100_0000 => 2,
+    let (prefix_len, network) = match decoded.as_slice() {
+        [first @ 0..=63, ..] => (1, u16::from(*first)),
+        [first @ 64..=127, second, ..] => {
+            let network = (u16::from(first & 0x3f) << 2)
+                | u16::from(second >> 6)
+                | (u16::from(second & 0x3f) << 8);
+            if network < 64 {
+                return false;
+            }
+            (2, network)
+        }
         _ => return false,
     };
-    if decoded.len() != prefix_len + 32 + 2 {
+    if matches!(network, 46 | 47) {
         return false;
     }
-
+    let body_len = decoded.len() - prefix_len;
+    let checksum_len = match body_len {
+        2 => 1,
+        3..=4 => body_len - 2,
+        5..=8 => body_len - 4,
+        9..=16 => body_len - 8,
+        34..=35 => 2,
+        _ => return false,
+    };
+    let end = decoded.len() - checksum_len;
     let mut hasher = Blake2b512::new();
     hasher.update(b"SS58PRE");
-    hasher.update(&decoded[..decoded.len() - 2]);
+    hasher.update(&decoded[..end]);
     let checksum = hasher.finalize();
-    decoded[decoded.len() - 2..] == checksum[..2]
+    decoded[end..] == checksum[..checksum_len]
 }
 
 /// Whether a candidate is a Bitcoin-style `Base58Check` public address. Restrict
@@ -736,14 +782,14 @@ fn is_sri_hash(s: &str) -> bool {
     if encoded.len() != data_chars + padding {
         return false;
     }
-    let (data, pad) = encoded.split_at(data_chars);
-    if !data.bytes().all(is_base64_char)
-        || !pad.bytes().all(|byte| byte == b'=')
+    let (data, pad) = encoded.as_bytes().split_at(data_chars);
+    if !data.iter().copied().all(is_base64_char)
+        || !pad.iter().all(|&byte| byte == b'=')
         || pad.len() != padding
     {
         return false;
     }
-    let Some(last) = data.bytes().last().and_then(base64_value) else {
+    let Some(last) = data.last().copied().and_then(base64_value) else {
         return false;
     };
     match padding {
@@ -775,7 +821,9 @@ fn is_public_identifier_candidate(s: &str) -> bool {
     if is_sri_hash(s) {
         return true;
     }
-    let bare = s.trim_matches(|ch: char| !ch.is_ascii_alphanumeric());
+    // Never strip characters in the opaque-token alphabet: '_<address>_'
+    // can itself be a credential. Only strip surrounding prose punctuation.
+    let bare = s.trim_matches(['"', '\'', '`', '(', ')', '[', ']', '{', '}', ',', ';']);
     if is_ss58_address(bare) || is_base58check_address(bare) {
         return true;
     }
@@ -788,7 +836,7 @@ fn is_public_identifier_candidate(s: &str) -> bool {
     let Some((prefix, address)) = s.rsplit_once('/') else {
         return false;
     };
-    let simple_path = prefix.starts_with('/')
+    let simple_path = s.starts_with('/')
         && prefix
             .split('/')
             .filter(|part| !part.is_empty())
@@ -798,41 +846,13 @@ fn is_public_identifier_candidate(s: &str) -> bool {
 
 /// Keyword values that are code expressions, type annotations, indirections,
 /// or conventional placeholders rather than literal credentials.
-fn is_non_secret_assignment_value(value: &str) -> bool {
-    let value = value.trim();
-    if value.is_empty()
-        || value.ends_with(',')
-        || value.starts_with('<') && value.ends_with('>')
-        || value.contains('(')
-        || value.contains(')')
-        || value.contains('[')
-        || value.contains(']')
-        || value.contains('$')
-        || value.starts_with("{{")
-        || value.ends_with("}}")
-        || value.starts_with('%') && value.ends_with('%')
-    {
-        return true;
-    }
-
-    let normalized = value.trim_matches(|ch: char| matches!(ch, ',' | ';' | ')' | ']' | '}'));
-    let lower = normalized.to_ascii_lowercase();
+fn is_non_secret_assignment_value(value: &str, quoted: bool, annotation: bool) -> bool {
+    // Exact placeholders only: prefixes like `example_` and suffixes like
+    // `_token` can also be part of a real credential.
+    let lower = value.to_ascii_lowercase();
     if matches!(
         lower.as_str(),
-        "str"
-            | "string"
-            | "int"
-            | "integer"
-            | "float"
-            | "bool"
-            | "boolean"
-            | "bytes"
-            | "none"
-            | "null"
-            | "undefined"
-            | "true"
-            | "false"
-            | "changeme"
+        "changeme"
             | "change_me"
             | "example"
             | "example_key"
@@ -845,23 +865,63 @@ fn is_non_secret_assignment_value(value: &str) -> bool {
             | "your_password"
             | "your_secret"
             | "your_api_key"
-    ) || lower.starts_with("your-")
-        || lower.starts_with("example_")
-        || lower.starts_with("sample_")
-        || lower.starts_with("replace_me")
-        || lower.starts_with("insert_")
-        || lower.ends_with("_token")
-        || lower.ends_with("_password")
-        || lower.ends_with("_secret")
-        || lower.ends_with("_api_key")
+            | "replace_me"
+            | "insert_token"
+            | "insert_password"
+            | "insert_secret"
+            | "insert_api_key"
+            | "your-token"
+            | "your-password"
+            | "your-secret"
+            | "your-api-key"
+            | "<your_token>"
+            | "<your_password>"
+            | "<your_secret>"
+            | "<your_api_key>"
+            | "<your-password>"
+            | "<your-token>"
+            | "<your-secret>"
+            | "<your-api-key>"
+            | "<your password>"
+            | "<your token>"
+            | "<your secret>"
+            | "<your api key>"
+    ) || assignment_reference_rule().is_match(value)
     {
         return true;
     }
-
-    if is_type_annotation(normalized) || is_dotted_identifier(normalized) {
+    // A quoted string is a literal, even when its contents resemble code or a
+    // type. Do not exempt passwords such as "Optional[str]" or "client.secret".
+    if quoted {
+        return false;
+    }
+    if matches!(
+        lower.trim_end_matches([')', ']', '}', ':']),
+        "none" | "null" | "undefined" | "true" | "false"
+    ) || annotation && is_type_annotation(value.trim_end_matches([')', ':']))
+        || is_dotted_identifier(value)
+    {
         return true;
     }
-    false
+    // A complete call (or a call prefix before a quoted argument), not merely
+    // a password containing parentheses. Rust paths use `::` instead of `.`.
+    [('(', ')'), ('[', ']')].into_iter().any(|(open, close)| {
+        value.split_once(open).is_some_and(|(callee, _)| {
+            (value.ends_with(close) || value.ends_with(open))
+                && callee
+                    .split("::")
+                    .all(|part| is_identifier(part) || is_dotted_identifier(part))
+        })
+    })
+}
+
+fn assignment_reference_rule() -> &'static Regex {
+    static RE: OnceLock<Regex> = OnceLock::new();
+    RE.get_or_init(|| {
+        structured_rule(
+            r"^(?:\$[A-Za-z_][A-Za-z0-9_]*|\$\{[A-Za-z_][A-Za-z0-9_]*\}|%[A-Z_][A-Z0-9_]*%|\{\{[ \t]*[A-Za-z_][A-Za-z0-9_.]*[ \t]*\}\})$",
+        )
+    })
 }
 
 fn is_type_annotation(value: &str) -> bool {
@@ -871,7 +931,22 @@ fn is_type_annotation(value: &str) -> bool {
     {
         return matches!(
             value.to_ascii_lowercase().as_str(),
-            "optional" | "option" | "list" | "dict" | "set" | "tuple" | "sequence" | "mapping"
+            "str"
+                | "string"
+                | "int"
+                | "integer"
+                | "float"
+                | "bool"
+                | "boolean"
+                | "bytes"
+                | "optional"
+                | "option"
+                | "list"
+                | "dict"
+                | "set"
+                | "tuple"
+                | "sequence"
+                | "mapping"
         );
     }
     let Some((name, arguments)) = value.split_once('[') else {
@@ -998,6 +1073,116 @@ mod tests {
             "sha384-oqVuAfXRKap7fdgcCY5uykM6+R9GqQ8K/uxy9rx7HNQlGYl1kPzQho1wx4JwY8wC"
         ));
         assert!(!is_sri_hash("sha384-not-a-valid-integrity-value"));
+    }
+
+    fn ss58_fixture(prefix: &[u8], payload: &[u8], checksum_len: usize) -> String {
+        let mut data = [prefix, payload].concat();
+        let digest = Blake2b512::digest([b"SS58PRE".as_slice(), &data].concat());
+        data.extend_from_slice(&digest[..checksum_len]);
+        bs58::encode(data).into_string()
+    }
+
+    #[test]
+    fn ss58_accepts_all_payload_lengths_and_network_prefix_widths() {
+        // Prefix 42 is also used by Bittensor; [0x50, 0x00] encodes network 64.
+        // Include leading zero bytes, which Base58 represents as leading '1's.
+        for prefix in [&[0][..], &[42], &[63], &[0x50, 0x00], &[0x7f, 0xff]] {
+            for (payload_len, max_checksum) in [(1, 1), (2, 2), (4, 4), (8, 8), (32, 2), (33, 2)] {
+                let checksums = if payload_len >= 32 {
+                    2..=2
+                } else {
+                    1..=max_checksum
+                };
+                for checksum_len in checksums {
+                    for byte in [0, 0xa7] {
+                        let address = ss58_fixture(prefix, &vec![byte; payload_len], checksum_len);
+                        assert!(is_ss58_address(&address), "prefix={prefix:?} payload={payload_len} checksum={checksum_len}: {address}");
+                        assert_eq!(entropy_backstop(&address), []);
+                        let mut decoded = bs58::decode(&address).into_vec().unwrap();
+                        *decoded.last_mut().unwrap() ^= 1;
+                        assert!(!is_ss58_address(&bs58::encode(decoded).into_string()));
+                    }
+                }
+            }
+        }
+        assert!(is_ss58_address(
+            "5Hq3PNMU3AJnw4HwTPCQ2yFUAjX19MFFWENW9bfNfH3CURcx"
+        ));
+    }
+
+    #[test]
+    fn ss58_rejects_reserved_prefixes_and_invalid_lengths() {
+        for prefix in [&[46][..], &[47], &[128], &[255], &[0x40, 0]] {
+            assert!(!is_ss58_address(&ss58_fixture(prefix, &[0xa7; 32], 2)));
+        }
+        for payload_len in [0, 17, 31, 34, 64] {
+            assert!(!is_ss58_address(&ss58_fixture(
+                &[42],
+                &vec![0xa7; payload_len],
+                2
+            )));
+        }
+    }
+
+    #[test]
+    fn base58check_preserves_leading_zeros_and_rejects_private_keys() {
+        for version in [0, 5, 111, 196] {
+            for zeros in 0..=20 {
+                let mut data = vec![version];
+                data.extend(vec![0; zeros]);
+                data.extend(vec![0xa7; 20 - zeros]);
+                let checksum = Sha256::digest(Sha256::digest(&data));
+                data.extend_from_slice(&checksum[..4]);
+                let address = bs58::encode(&data).into_string();
+                assert!(is_base58check_address(&address), "{address}");
+                assert!(!is_base58check_address(&format!("1{address}")));
+                for invalid in ['0', 'O', 'I', 'l', 'é'] {
+                    let malformed = format!("{}{invalid}{}", &address[..10], &address[11..]);
+                    assert!(!is_base58check_address(&malformed));
+                }
+            }
+        }
+        // WIF is Base58Check too, but is a private key, never a public exemption.
+        let mut data = vec![128];
+        data.extend(Sha256::digest(b"test-only WIF private key"));
+        let checksum = Sha256::digest(Sha256::digest(&data));
+        data.extend_from_slice(&checksum[..4]);
+        let wif = bs58::encode(data).into_string();
+        assert!(!is_base58check_address(&wif));
+        assert!(!is_public_identifier_candidate(&wif));
+        assert_ne!(detect_secrets(&wif), []);
+    }
+
+    #[test]
+    fn sri_rejects_wrong_lengths_padding_and_non_ascii_without_panicking() {
+        for (algorithm, chars, padding) in [("sha256", 43, 1), ("sha384", 64, 0), ("sha512", 86, 2)]
+        {
+            let data = "A".repeat(chars);
+            let digest = format!("{algorithm}-{data}{}", "=".repeat(padding));
+            assert!(is_sri_hash(&digest));
+            assert!(!is_sri_hash(&format!("{digest}=")));
+            assert!(!is_sri_hash(&digest[..digest.len() - 1]));
+            if padding > 0 {
+                assert!(!is_sri_hash(&format!(
+                    "{algorithm}-{}B{}",
+                    "A".repeat(chars - 1),
+                    "=".repeat(padding)
+                )));
+                let unicode = format!(
+                    "{algorithm}-{}é{}",
+                    "A".repeat(chars - 1),
+                    "=".repeat(padding - 1)
+                );
+                assert!(!is_sri_hash(&unicode));
+            }
+            for bad in ['-', '_', '=', ' ', 'é'] {
+                assert!(!is_sri_hash(&format!(
+                    "{algorithm}-{bad}{}{}",
+                    "A".repeat(chars - 1),
+                    "=".repeat(padding)
+                )));
+            }
+        }
     }
 
     #[test]

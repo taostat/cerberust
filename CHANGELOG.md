@@ -15,10 +15,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 
 - The generic secret entropy backstop now requires at least three character
-  classes and leaves checksum-valid SS58 AccountId and Bitcoin Base58Check
-  addresses and valid SRI digest strings intact. Labelled-secret matching skips
-  type annotations, code expressions, environment/template references and
-  common placeholders.
+  classes and leaves checksum-valid SS58 account indices/public keys and Bitcoin
+  Base58Check addresses and valid SRI digest strings intact. Labelled-secret
+  matching skips type annotations, code expressions, environment/template references and
+  exact common placeholders, while preserving detection of quoted literals,
+  typed assignments and literal environment defaults. SS58 validation covers
+  both network-prefix widths and all supported payload/checksum lengths;
+  malformed non-ASCII SRI input is rejected without slicing UTF-8 boundaries.
 - `ScannerStack::run_input` stores `ScanCtx::prompt` only when an input or
   output scanner in the stack needs it; otherwise the prompt is cleared, so a
   stack of built-in scanners no longer keeps a copy of the last input.
