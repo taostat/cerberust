@@ -559,9 +559,9 @@ const CREDENTIAL_PATTERNS: [&str; 2] = [
         r"|(?:str|string|int|integer|float|bool|boolean|bytes)",
         r"|[a-z_][a-z0-9_.]*(?:\[[a-z0-9_. ,|\[\]]+\]|<[a-z0-9_:<> ,]+>)",
         r")[ \t]*=[ \t]*|\s*(?:(?P<colon>:)|=)\s*)",
-        r#"(?:(?:os\.getenv|os\.environ\.get|getenv)\(\s*(?:"[^"\r\n]*"|'[^'\r\n]*')\s*,\s*(?:default\s*=\s*)?)?"#,
-        r#"(?:"(?P<double>(?:\\[^\r\n]|[^"\\\r\n])*)(?:"|$)"#,
-        r"|'(?P<single>(?:\\[^\r\n]|[^'\\\r\n])*)(?:'|$)",
+        r#"(?:(?:os\.getenv|os\.environ\.get|getenv)\s*\(\s*(?:"[^"\r\n]*"|'[^'\r\n]*')\s*,\s*(?:default\s*=\s*)?)?"#,
+        r#"(?:"(?P<double>(?:\\[^\r\n]|[^"\\\r\n])*\\?)(?:"|[\r\n]|$)"#,
+        r"|'(?P<single>(?:\\[^\r\n]|[^'\\\r\n])*\\?)(?:'|[\r\n]|$)",
         r#"|(?P<bare>[^\s"'&]+))"#,
     ),
     r"[a-z][a-z0-9+.\-]*://[^\s:/@]+:([^\s/@]+)@",
@@ -626,13 +626,24 @@ pub fn detect_secrets(text: &str) -> Vec<Span> {
             spans.push(Span::new(m.start(), m.end(), rule.ty, 0.99));
         }
     }
-    for caps in labelled_secret_rule().captures_iter(text) {
+    let mut search_start = 0;
+    while let Some(caps) = labelled_secret_rule().captures_at(text, search_start) {
         let quoted = caps.name("double").or_else(|| caps.name("single"));
         if let Some(v) = quoted.or_else(|| caps.name("bare")) {
             let value = if quoted.is_some() {
                 v.as_str()
             } else {
                 v.as_str().trim_end_matches([',', ';'])
+            };
+            // A fully captured call can contain another labelled assignment,
+            // e.g. token=issue(secret=hunter2). Revisit only complete bare calls:
+            // their outer regex match also holds every nested value in streaming.
+            // Re-entering a call prefix ending before a quoted argument could
+            // extend detection beyond that match and break the streaming bound.
+            search_start = if quoted.is_none() && value.ends_with([')', ']']) {
+                v.start()
+            } else {
+                v.end()
             };
             if value.len() >= 6
                 && !is_non_secret_assignment_value(
@@ -686,8 +697,9 @@ fn is_hexish(s: &str) -> bool {
 }
 
 /// Whether a candidate has enough character-class diversity for an opaque
-/// credential. Pure hex digests and lowercase/alphanumeric identifiers have at
-/// most two classes, so they do not reach the entropy check.
+/// credential. Lowercase/alphanumeric identifiers have at most two classes,
+/// so they do not reach the entropy check. Hex is excluded separately because
+/// mixed-case hex identifiers can contain three classes.
 fn has_character_class_diversity(s: &str) -> bool {
     let mut classes = [false; 4];
     for byte in s.bytes() {
@@ -847,9 +859,17 @@ fn is_public_identifier_candidate(s: &str) -> bool {
 /// Keyword values that are code expressions, type annotations, indirections,
 /// or conventional placeholders rather than literal credentials.
 fn is_non_secret_assignment_value(value: &str, quoted: bool, annotation: bool) -> bool {
+    // A bare reference or placeholder may be the final argument of a call.
+    // Keep quoted punctuation literal, and retain brackets/braces belonging to
+    // environment references and templates.
+    let reference = if quoted {
+        value
+    } else {
+        value.trim_end_matches(')')
+    };
     // Exact placeholders only: prefixes like `example_` and suffixes like
     // `_token` can also be part of a real credential.
-    let lower = value.to_ascii_lowercase();
+    let lower = reference.to_ascii_lowercase();
     if matches!(
         lower.as_str(),
         "changeme"
@@ -886,7 +906,7 @@ fn is_non_secret_assignment_value(value: &str, quoted: bool, annotation: bool) -
             | "<your token>"
             | "<your secret>"
             | "<your api key>"
-    ) || assignment_reference_rule().is_match(value)
+    ) || assignment_reference_rule().is_match(reference)
     {
         return true;
     }
@@ -899,7 +919,7 @@ fn is_non_secret_assignment_value(value: &str, quoted: bool, annotation: bool) -
         lower.trim_end_matches([')', ']', '}', ':']),
         "none" | "null" | "undefined" | "true" | "false"
     ) || annotation && is_type_annotation(value.trim_end_matches([')', ':']))
-        || is_dotted_identifier(value)
+        || is_dotted_identifier(reference)
     {
         return true;
     }
@@ -949,14 +969,16 @@ fn is_type_annotation(value: &str) -> bool {
                 | "mapping"
         );
     }
-    let Some((name, arguments)) = value.split_once('[') else {
+    let Some(open) = value.find(['[', '<']) else {
         return false;
     };
-    arguments.ends_with(']')
+    let (name, arguments) = value.split_at(open);
+    let close = if arguments.starts_with('[') { ']' } else { '>' };
+    arguments.ends_with(close)
         && is_identifier(name)
-        && arguments[..arguments.len() - 1]
+        && arguments[1..arguments.len() - 1]
             .bytes()
-            .all(|byte| byte.is_ascii_alphanumeric() || b"_., []|?".contains(&byte))
+            .all(|byte| byte.is_ascii_alphanumeric() || b"_., []|?:<>".contains(&byte))
 }
 
 fn is_dotted_identifier(value: &str) -> bool {
@@ -975,25 +997,22 @@ fn is_identifier(value: &str) -> bool {
 }
 
 /// High-entropy token backstop: flags diverse whitespace-delimited tokens that
-/// look like opaque credentials. base64 ≥4.5 bits/char, hex ≥3.0. Catches a
-/// bespoke mixed-class token that matches no vendor pattern.
+/// look like opaque credentials: non-hex base64 ≥4.5 bits/char. Catches a bespoke
+/// mixed-class token that matches no vendor pattern.
 fn entropy_backstop(text: &str) -> Vec<Span> {
     let mut spans = Vec::new();
     for (start, tok) in split_with_offsets(text) {
         let len = tok.len();
         // Test the cheap character-class predicates before computing entropy: a
-        // long prose word is neither hex nor base64, so it never pays for the
-        // entropy scan.
+        // long prose word lacks diversity, so it never pays for the entropy scan.
         if len >= 20
-            && (is_hexish(tok) || is_base64ish(tok))
+            && is_base64ish(tok)
+            && !is_hexish(tok)
             && has_character_class_diversity(tok)
             && !is_public_identifier_candidate(tok)
+            && shannon_entropy(tok) >= 4.5
         {
-            let ent = shannon_entropy(tok);
-            let hit = (is_hexish(tok) && ent >= 3.0) || (is_base64ish(tok) && ent >= 4.5);
-            if hit {
-                spans.push(Span::new(start, start + len, "SECRET", 0.7));
-            }
+            spans.push(Span::new(start, start + len, "SECRET", 0.7));
         }
     }
     spans

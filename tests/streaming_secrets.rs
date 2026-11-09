@@ -209,6 +209,12 @@ fn labelled_literals_and_defaults_never_leak_across_chunks() {
         format!("password: str = os.getenv('DB_PASSWORD', '{secret}')\n"),
         format!("password = os.environ.get('DB_PASSWORD', default='{secret}')\n"),
         format!("password = '{secret}(with$punctuation)'\n"),
+        format!("password = os.getenv ('DB_PASSWORD', '{secret}')\n"),
+        format!("token=issue(secret={secret})\n"),
+        format!("token=issue(secret=derive(password={secret}))\n"),
+        format!("password='{secret}\nnext line\n"),
+        format!("password=\"{secret}\\\r\nnext line\n"),
+        format!("password='{secret}\\"),
     ] {
         let mut unary_stack = stack();
         let unary = normalize(&unary_stack.run_output(&text).unwrap());

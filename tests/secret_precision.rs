@@ -152,6 +152,7 @@ fn literal_assignments_are_not_exempted_by_punctuation_or_placeholder_fragments(
         "private9_api_key",
         "client.secret",
         "Optional[str]",
+        "Option<String>",
         "self.tokenizer(text)",
         "secret}}",
         "<private9>",
@@ -263,4 +264,63 @@ fn padded_literal_is_not_misread_as_a_type_annotation() {
     for value in ["aBcDeF9x7k2m==", "Optional9x7k2m=", "string9x7k2m="] {
         assert_redacted(&format!("password:{value}"), value, "SECRET");
     }
+}
+
+#[test]
+fn mixed_case_hex_identifiers_are_not_secrets() {
+    for value in [
+        "616670c245D44b2C80f0272cdF1d2629",
+        "3e4035A3febe3E91f4319a5D1e93D6787d4fbb6d",
+        "e163e53B9e7E8a8511e77271e2B323ed057759542a6D988258afe3a1fa329caf",
+    ] {
+        assert_eq!(detect_secrets(value), [], "hex identifier: {value}");
+        assert_redacted(&format!("password={value}"), value, "SECRET");
+    }
+}
+
+#[test]
+fn truncated_quoted_assignments_still_redact() {
+    for quote in ['\'', '"'] {
+        for suffix in ["\n", "\r\n", "\\\n", "\\"] {
+            let text = format!("password={quote}hunter2{suffix}");
+            assert_redacted(&text, "hunter2", "SECRET");
+        }
+    }
+}
+
+#[test]
+fn exempt_calls_do_not_hide_nested_secret_assignments() {
+    for text in [
+        "token=issue(secret=hunter2)",
+        "token=issue(secret=derive(password=hunter2))",
+    ] {
+        assert_redacted(text, "hunter2", "SECRET");
+    }
+    for text in [
+        "token=issue(secret=config.secret)",
+        "token=issue(secret=derive(password=os.getenv('DB_PASSWORD')))",
+        "token=self.tokenizer(text,add_special_tokens=False)",
+    ] {
+        assert_eq!(detect_secrets(text), [], "code expression: {text}");
+    }
+}
+
+#[test]
+fn environment_defaults_allow_space_before_parentheses() {
+    for call in ["os.getenv", "os.environ.get", "getenv"] {
+        let text = format!("password = {call} ('DB_PASSWORD', 'hunter2')");
+        assert_redacted(&text, "hunter2", "SECRET");
+    }
+}
+
+#[test]
+fn angle_bracket_type_annotations_are_not_secrets() {
+    for text in [
+        "password: Option<String>",
+        "struct Config { secret: Option<String>, }",
+        "interface Config { token: Promise<string>; }",
+    ] {
+        assert_eq!(detect_secrets(text), [], "type annotation: {text}");
+    }
+    assert_redacted("password=Option<String>", "Option<String>", "SECRET");
 }
