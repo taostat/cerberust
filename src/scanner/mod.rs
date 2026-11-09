@@ -169,6 +169,12 @@ pub trait Scanner: Send + Sync {
     fn stream_hold_floor(&self, buf: &[u8]) -> usize {
         buf.len()
     }
+
+    /// Start of a completed non-regex match crossing `split`, if any. The
+    /// runner moves its split back until all completed matches can flush whole.
+    fn stream_match_start(&self, _buf: &[u8], _split: usize) -> Option<usize> {
+        None
+    }
 }
 
 /// A single scanner's content-free metrics for one run: counts and per-entity-
@@ -347,6 +353,14 @@ impl ScannerStack {
             .map(|s| s.stream_hold_floor(buf))
             .min()
             .unwrap_or(buf.len())
+    }
+
+    pub(crate) fn output_match_start(&self, buf: &[u8], split: usize) -> Option<usize> {
+        self.output
+            .iter()
+            .filter_map(|scanner| scanner.stream_match_start(buf, split))
+            .filter(|&start| start < split)
+            .min()
     }
 
     /// Whether any output scanner declares [`HoldBack::WholeStream`] — it cannot

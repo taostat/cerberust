@@ -162,9 +162,38 @@ pub(crate) fn detect(text: &str) -> Vec<Span> {
 /// overlapping windows are redacted as their union. The cost is occasionally
 /// redacting list words adjacent to a phrase.
 fn select_windows(run: &[(usize, usize, u16)]) -> Vec<(usize, usize)> {
-    if is_public_substrate_dev_phrase(run) {
-        return Vec::new();
+    let public: Vec<_> = run
+        .windows(12)
+        .enumerate()
+        .filter(|(_, window)| is_public_substrate_dev_phrase(window))
+        .map(|(start, window)| (start, start + window.len()))
+        .collect();
+    let mut windows = Vec::new();
+    let mut public_index = 0;
+    for (mut first, last) in private_windows(run) {
+        while public
+            .get(public_index)
+            .is_some_and(|&(_, end)| end <= first)
+        {
+            public_index += 1;
+        }
+        for &(start, end) in &public[public_index..] {
+            if start > last {
+                break;
+            }
+            if first < start {
+                windows.push((first, start - 1));
+            }
+            first = first.max(end);
+        }
+        if first <= last {
+            windows.push((first, last));
+        }
     }
+    windows
+}
+
+fn private_windows(run: &[(usize, usize, u16)]) -> Vec<(usize, usize)> {
     // A run of exactly a mnemonic's length is redacted whole even when the
     // checksum fails: one wrong or mistyped word leaves the rest brute-forceable.
     if LENGTHS.contains(&run.len()) {
@@ -203,12 +232,11 @@ fn is_public_substrate_dev_phrase(run: &[(usize, usize, u16)]) -> bool {
         "bottom", "drive", "obey", "lake", "curtain", "smoke", "basket", "hold", "race", "lonely",
         "fit", "walk",
     ];
-    run.windows(PHRASE.len()).any(|window| {
-        window
+    run.len() == PHRASE.len()
+        && run
             .iter()
             .zip(PHRASE)
             .all(|(word, expected)| words()[usize::from(word.2)].eq_ignore_ascii_case(expected))
-    })
 }
 
 /// Longest trailing run held on a stream. Twice a mnemonic's length, so a
@@ -217,24 +245,22 @@ fn is_public_substrate_dev_phrase(run: &[(usize, usize, u16)]) -> bool {
 const MAX_HELD_WORDS: usize = 48;
 
 /// The byte offset a streaming runner may flush up to without splitting a
-/// possible seed phrase. It retains trailing list-word runs and completed
-/// phrases until a unary scan can redact the whole match.
+/// possible seed phrase. Completed matches are checked against the final split
+/// separately, so a finished phrase does not hold the rest of the stream.
 #[must_use]
 pub(crate) fn hold_floor(buf: &[u8]) -> usize {
-    let (run, matched_floor) = word_run_for_holdback(buf);
+    let run = word_run_for_holdback(buf);
     let Some(&(_, last_end, _)) = run.last() else {
-        return matched_floor.unwrap_or(buf.len());
+        return buf.len();
     };
     if !is_separator(&buf[last_end..trailing_token_start(buf, last_end)]) {
-        return matched_floor.unwrap_or(buf.len());
+        return buf.len();
     }
-    let trailing_floor = trailing_run_floor(&run);
-    matched_floor.map_or(trailing_floor, |floor| floor.min(trailing_floor))
+    trailing_run_floor(&run)
 }
 
-fn word_run_for_holdback(buf: &[u8]) -> (Vec<(usize, usize, u16)>, Option<usize>) {
+fn word_run_for_holdback(buf: &[u8]) -> Vec<(usize, usize, u16)> {
     let mut run: Vec<(usize, usize, u16)> = Vec::new();
-    let mut matched_floor = None;
     let mut i = 0;
     while i < buf.len() {
         if !buf[i].is_ascii_alphabetic() {
@@ -249,7 +275,6 @@ fn word_run_for_holdback(buf: &[u8]) -> (Vec<(usize, usize, u16)>, Option<usize>
             .last()
             .is_some_and(|&(_, end, _)| is_separator(&buf[end..start]));
         if !joined {
-            remember_match_floor(&mut matched_floor, &run);
             run.clear();
         }
         if i == buf.len() {
@@ -260,12 +285,10 @@ fn word_run_for_holdback(buf: &[u8]) -> (Vec<(usize, usize, u16)>, Option<usize>
         if let Some(index) = index_of(&buf[start..i]) {
             run.push((start, i, index));
         } else {
-            remember_match_floor(&mut matched_floor, &run);
             run.clear();
         }
     }
-    remember_match_floor(&mut matched_floor, &run);
-    (run, matched_floor)
+    run
 }
 
 fn trailing_run_floor(run: &[(usize, usize, u16)]) -> usize {
@@ -279,15 +302,6 @@ fn trailing_run_floor(run: &[(usize, usize, u16)]) -> usize {
         }
     }
     run[first].0
-}
-
-fn remember_match_floor(floor: &mut Option<usize>, run: &[(usize, usize, u16)]) {
-    // The hold-back DFA does not encode checksum windows, so retain completed
-    // matches until the next unary scan can redact them as whole spans.
-    if let Some((first, _)) = select_windows(run).first() {
-        let start = run[*first].0;
-        *floor = Some(floor.map_or(start, |current| current.min(start)));
-    }
 }
 
 /// Start of the alphabetic token that ends `buf`, or `buf.len()` if `buf` does
@@ -452,6 +466,27 @@ mod tests {
         let phrase = "bottom drive obey lake curtain smoke basket hold race lonely fit walk";
         assert_eq!(detect(phrase), Vec::<Span>::new());
         assert_eq!(detect(&format!("{phrase}//Alice")), Vec::<Span>::new());
+    }
+
+    #[test]
+    fn development_phrase_does_not_exempt_adjacent_mnemonics() {
+        let public = "bottom drive obey lake curtain smoke basket hold race lonely fit walk";
+        for text in [
+            format!("{public} {ABANDON_12}"),
+            format!("{ABANDON_12} {public}"),
+        ] {
+            let start = text.find(ABANDON_12).unwrap();
+            assert!(detect(&text)
+                .iter()
+                .any(|span| span.start <= start && span.end >= start + ABANDON_12.len()));
+        }
+        let tail = std::iter::repeat_n("abandon", 6)
+            .collect::<Vec<_>>()
+            .join(" ");
+        let text = format!("{public} {tail}");
+        assert!(detect(&text)
+            .iter()
+            .any(|span| span.start == public.len() + 1 && span.end == text.len()));
     }
 
     #[test]

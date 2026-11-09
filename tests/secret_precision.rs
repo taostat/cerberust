@@ -384,17 +384,19 @@ fn bitcoin_private_keys_require_base58check_and_private_versions() {
     };
     let bad_wif = String::from_utf8(bad_wif).unwrap();
     assert_no_new_crypto_type(&bad_wif);
-    assert_eq!(detect_secrets(&bad_wif), []);
-    assert_eq!(detect_secrets(&wif[..wif.len() - 1]), []);
+    assert_redacted(&bad_wif, &bad_wif, "SECRET");
+    assert_redacted(&wif[..wif.len() - 1], &wif[..wif.len() - 1], "SECRET");
     let bad_wif_char = format!("{}0{}", &wif[..10], &wif[11..]);
-    assert_eq!(detect_secrets(&bad_wif_char), []);
+    assert_no_new_crypto_type(&bad_wif_char);
+    assert_redacted(&bad_wif_char, &bad_wif_char, "SECRET");
 
     for bad_xprv in [
         xprv[..xprv.len() - 1].to_owned(),
         format!("{}0{}", &xprv[..10], &xprv[11..]),
         corrupt_base58_checksum(xprv),
     ] {
-        assert_eq!(detect_secrets(&bad_xprv), [], "{bad_xprv}");
+        assert_no_new_crypto_type(&bad_xprv);
+        assert_redacted(&bad_xprv, &bad_xprv, "SECRET");
     }
 }
 
@@ -616,6 +618,8 @@ fn truncated_quoted_assignments_still_redact() {
 fn exempt_calls_do_not_hide_nested_secret_assignments() {
     for text in [
         "token=issue(secret=hunter2)",
+        "token=issue(secret='hunter2')",
+        "token=issue(secret=\"hunter2\")",
         "token=issue(secret=derive(password=hunter2))",
         "token=issue(secret=hunter2,other=nested('text'))",
     ] {
@@ -633,11 +637,40 @@ fn exempt_calls_do_not_hide_nested_secret_assignments() {
 }
 
 #[test]
+fn nested_assignments_redact_each_argument() {
+    for separator in [",", ", "] {
+        let text = format!("token=issue(secret=hunter2{separator}password=private9x7)");
+        assert_redacted(&text, "hunter2", "SECRET");
+        assert_redacted(&text, "private9x7", "SECRET");
+    }
+}
+
+#[test]
 fn environment_defaults_allow_space_before_parentheses() {
     for call in ["os.getenv", "os.environ.get", "getenv"] {
         let text = format!("password = {call} ('DB_PASSWORD', 'hunter2')");
         assert_redacted(&text, "hunter2", "SECRET");
     }
+}
+
+#[test]
+fn environment_defaults_accept_double_quoted_lookup_names() {
+    for call in ["os.getenv", "os.environ.get", "getenv"] {
+        for value in ["'hunter2'", "\"hunter2\"", "default=\"hunter2\""] {
+            let text = format!("password = {call}(\"DB_PASSWORD\", {value})");
+            assert_redacted(&text, "hunter2", "SECRET");
+        }
+    }
+}
+
+#[test]
+fn deeply_nested_assignments_preserve_literals_and_code_references() {
+    let prefix = "token=f(".repeat(16_384);
+    let suffix = ")".repeat(16_384);
+    let literal = format!("{prefix}password=hunter2{suffix}");
+    assert_redacted(&literal, "hunter2", "SECRET");
+    let reference = format!("{prefix}password=config.password{suffix}");
+    assert_eq!(detect_secrets(&reference), []);
 }
 
 #[test]

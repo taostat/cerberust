@@ -99,6 +99,12 @@ fn stream(response: &str, chunk_len: usize, secret: &str) -> String {
         i = end;
     }
     emitted.push_str(&runner.finish(&mut stack).unwrap());
+    for fragment in frags {
+        assert!(
+            !emitted.contains(fragment),
+            "leaked final fragment {fragment:?}"
+        );
+    }
     emitted
 }
 
@@ -267,7 +273,12 @@ fn labelled_literals_and_defaults_never_leak_across_chunks() {
         format!("password = os.environ.get('DB_PASSWORD', default='{secret}')\n"),
         format!("password = '{secret}(with$punctuation)'\n"),
         format!("password = os.getenv ('DB_PASSWORD', '{secret}')\n"),
+        format!("password = os.getenv(\"DB_PASSWORD\", \"{secret}\")\n"),
+        format!("password = os.environ.get(\"DB_PASSWORD\", default='{secret}')\n"),
         format!("token=issue(secret={secret})\n"),
+        format!("token=issue(secret='{secret}')\n"),
+        format!("token=issue(secret=\"{secret}\")\n"),
+        format!("token=issue(password=another9x7,secret={secret})\n"),
         format!("token=issue(secret=derive(password={secret}))\n"),
         format!("token=issue(secret={secret},other=nested('text'))\n"),
         format!("token=issue (secret={secret}, other=nested('text'))\n"),
@@ -315,5 +326,85 @@ fn spaced_code_expressions_remain_intact_across_chunks() {
             emitted.push_str(&runner.finish(&mut scanners).unwrap());
             assert_eq!(emitted, text, "chunk_len={chunk_len}");
         }
+    }
+}
+
+#[test]
+fn completed_mnemonics_flush_before_end_of_stream() {
+    let phrase = std::iter::repeat_n("abandon", 11)
+        .chain(["about"])
+        .collect::<Vec<_>>()
+        .join(" ");
+    let mut scanners = stack();
+    let mut runner = StreamOutput::new(&scanners);
+    let emitted = runner
+        .push(&mut scanners, &format!("{phrase}\nfinished!\n"))
+        .unwrap();
+    assert!(emitted.contains("[REDACTED_SEED_PHRASE_"));
+    assert!(!emitted.contains(&phrase));
+}
+
+#[test]
+fn completed_mnemonic_is_not_split_by_another_scanner() {
+    use cerberust::{RegexRule, RegexScanner};
+
+    let phrase = std::iter::repeat_n("abandon", 11)
+        .chain(["about"])
+        .collect::<Vec<_>>()
+        .join(" ");
+    let regex = RegexScanner::new(vec![RegexRule::new("about quux end", "TEST").unwrap()])
+        .with_direction(Direction::Output);
+    let mut scanners = ScannerStack::new(
+        vec![
+            Box::new(regex),
+            Box::new(SecretScanner::new().with_direction(Direction::Output)),
+        ],
+        true,
+    );
+    let mut runner = StreamOutput::new(&scanners);
+    assert_eq!(
+        runner
+            .push(&mut scanners, &format!("{phrase} quux "))
+            .unwrap(),
+        ""
+    );
+    let output = runner.push(&mut scanners, "finished!\n").unwrap();
+    assert!(output.contains("[REDACTED_SEED_PHRASE_"));
+    assert!(!output.contains("abandon"));
+}
+
+#[test]
+fn adjacent_public_and_private_mnemonics_redact_in_streams() {
+    let public = "bottom drive obey lake curtain smoke basket hold race lonely fit walk";
+    let private = std::iter::repeat_n("abandon", 11)
+        .chain(["about"])
+        .collect::<Vec<_>>()
+        .join(" ");
+    for text in [
+        format!("{public} {private}\n"),
+        format!("{private} {public}\n"),
+    ] {
+        for chunk_len in 1..=8 {
+            let output = stream(&text, chunk_len, &private);
+            assert!(!output.contains("abandon"));
+            assert!(output.contains(public));
+        }
+    }
+}
+
+#[test]
+fn unicode_keyword_matches_remain_held_across_chunks() {
+    let key = format!("0x{}", "a7".repeat(32));
+    for text in [format!("ſeed = {key}\n"), format!("SEED = {key}\n")] {
+        let mut scanners = stack();
+        let expected = normalize(&scanners.run_output(&text).unwrap());
+        assert!(expected.contains("[REDACTED_BITTENSOR_SEED_"));
+        let mut runner = StreamOutput::new(&scanners);
+        let mut emitted = String::new();
+        for ch in text.chars() {
+            emitted.push_str(&runner.push(&mut scanners, &ch.to_string()).unwrap());
+        }
+        emitted.push_str(&runner.finish(&mut scanners).unwrap());
+        assert_eq!(normalize(&emitted), expected);
     }
 }

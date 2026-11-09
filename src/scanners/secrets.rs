@@ -11,6 +11,7 @@
 
 use crate::scanner::detect::{
     detect_secrets, resolve_overlaps, secret_pattern_sources, seed_phrase_hold_floor,
+    seed_phrase_match_start,
 };
 use crate::scanner::{
     Direction, Disposition, RestorePolicy, ScanCtx, ScanResult, Scanner, ScannerId, Verdict,
@@ -107,6 +108,10 @@ impl Scanner for SecretScanner {
 
     fn stream_hold_floor(&self, buf: &[u8]) -> usize {
         seed_phrase_hold_floor(buf)
+    }
+
+    fn stream_match_start(&self, buf: &[u8], split: usize) -> Option<usize> {
+        seed_phrase_match_start(buf, split)
     }
 }
 

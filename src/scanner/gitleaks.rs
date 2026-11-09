@@ -104,17 +104,39 @@ enum KeywordRule {
 }
 
 fn add_keyword(
-    keyword_list: &mut Vec<&'static str>,
+    keyword_list: &mut Vec<String>,
     keyword_rules: &mut Vec<Vec<KeywordRule>>,
-    keyword: &'static str,
+    keyword: &str,
     rule: KeywordRule,
 ) {
     if let Some(pos) = keyword_list.iter().position(|known| *known == keyword) {
         keyword_rules[pos].push(rule);
     } else {
-        keyword_list.push(keyword);
+        keyword_list.push(keyword.to_owned());
         keyword_rules.push(vec![rule]);
     }
+}
+
+fn unicode_keyword_variants(keyword: &str) -> Vec<String> {
+    let mut variants = vec![String::new()];
+    for ch in keyword.chars() {
+        let folded = match ch {
+            's' | 'S' => Some('ſ'),
+            'k' | 'K' => Some('\u{212a}'),
+            _ => None,
+        };
+        let mut extra = Vec::new();
+        for variant in &mut variants {
+            if let Some(folded) = folded {
+                let mut alternate = variant.clone();
+                alternate.push(folded);
+                extra.push(alternate);
+            }
+            variant.push(ch);
+        }
+        variants.extend(extra);
+    }
+    variants
 }
 
 fn compile_all(patterns: &[&str]) -> Vec<Regex> {
@@ -125,7 +147,7 @@ fn compiled() -> &'static Compiled {
     static COMPILED: OnceLock<Compiled> = OnceLock::new();
     COMPILED.get_or_init(|| {
         let mut rules = Vec::with_capacity(RULES.len());
-        let mut keyword_list: Vec<&'static str> = Vec::new();
+        let mut keyword_list: Vec<String> = Vec::new();
         let mut keyword_rules: Vec<Vec<KeywordRule>> = Vec::new();
         for rule in RULES {
             // Every generated regex compiles (the generator checks); a failure
@@ -164,12 +186,14 @@ fn compiled() -> &'static Compiled {
         }
         for (index, keywords) in validated_secret_keywords().enumerate() {
             for kw in keywords {
-                add_keyword(
-                    &mut keyword_list,
-                    &mut keyword_rules,
-                    kw,
-                    KeywordRule::Validated(index),
-                );
+                for variant in unicode_keyword_variants(kw) {
+                    add_keyword(
+                        &mut keyword_list,
+                        &mut keyword_rules,
+                        &variant,
+                        KeywordRule::Validated(index),
+                    );
+                }
             }
         }
         let keywords = AhoCorasickBuilder::new()

@@ -21,6 +21,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   complete subdivision flag sequences from input, or blocks in block mode.
 - `Scanner::needs_prompt()` (default `true`) declares whether a scanner reads
   `ScanCtx::prompt`. Built-in scanners return `false`.
+- `Scanner::stream_match_start()` (default `None`) lets a scanner report the
+  start of a completed match that crosses the streaming runner's flush point,
+  so the runner never flushes that match in pieces.
 
 ### Changed
 

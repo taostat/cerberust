@@ -9,6 +9,7 @@
 //! an `ort`/`gline-rs` detector that emits the same [`Span`]s; the scanner code
 //! is already span-based so it slots in without changing the rewrite path.
 
+use std::collections::HashMap;
 use std::sync::OnceLock;
 
 use blake2::Blake2b512;
@@ -721,7 +722,7 @@ const CREDENTIAL_PATTERNS: [&str; 2] = [
         r")[ \t]*=[ \t]*|\s*(?:(?P<colon>:)|=)\s*)",
         concat!(
             r#"(?:(?:os\.getenv|os\.environ\.get|getenv)\s*\(\s*(?:"#,
-            r#"[^"\r\n]*"|'[^'\r\n]*')\s*,\s*(?:default\s*=\s*)?)?"#
+            r#""[^"\r\n]*"|'[^'\r\n]*')\s*,\s*(?:default\s*=\s*)?)?"#
         ),
         r#"(?:"(?P<double>(?:\\[^\r\n]|[^"\\\r\n])*\\?)(?:"|[\r\n]|$)"#,
         r"|'(?P<single>(?:\\[^\r\n]|[^'\\\r\n])*\\?)(?:'|[\r\n]|$)",
@@ -745,7 +746,15 @@ pub fn secret_pattern_sources() -> Vec<String> {
         .chain(
             ADDITIONAL_SECRET_PATTERNS
                 .iter()
-                .map(|(_, pattern, _, _, _)| (*pattern).to_owned()),
+                .map(|(_, pattern, _, _, _)| {
+                    // The DFA uses ASCII boundaries; Unicode-aware rules need
+                    // a conservative hold-back source without those assertions.
+                    if pattern.starts_with("(?i)") {
+                        pattern.replace(r"\b", "")
+                    } else {
+                        (*pattern).to_owned()
+                    }
+                }),
         )
         .chain(CREDENTIAL_PATTERNS.iter().map(|p| (*p).to_owned()))
         .chain(gitleaks::pattern_sources())
@@ -787,7 +796,9 @@ fn validated_secret_rules() -> &'static [ValidatedSecretRule] {
 /// span (named quoted/bare groups), not the label or type, is redacted.
 fn labelled_secret_rule() -> &'static Regex {
     static RE: OnceLock<Regex> = OnceLock::new();
-    RE.get_or_init(|| structured_rule(CREDENTIAL_PATTERNS[0]))
+    RE.get_or_init(|| {
+        structured_rule(&CREDENTIAL_PATTERNS[0].replace(r#"[\[(<][^\r\n"'&]*"#, r"[\[(<]"))
+    })
 }
 
 /// A `scheme://user:password@host` URL credential. The password span (group 1).
@@ -800,6 +811,18 @@ fn url_credential_rule() -> &'static Regex {
 #[must_use]
 pub fn seed_phrase_hold_floor(buf: &[u8]) -> usize {
     bip39::hold_floor(buf)
+}
+
+pub(crate) fn seed_phrase_match_start(buf: &[u8], split: usize) -> Option<usize> {
+    if split == 0 || split >= buf.len() {
+        return None;
+    }
+    let text = std::str::from_utf8(buf).ok()?;
+    bip39::detect(text)
+        .iter()
+        .filter(|span| span.start < split && split < span.end)
+        .map(|span| span.start)
+        .min()
 }
 
 /// Detect credentials: known-vendor patterns (the crate's own plus the ported
@@ -915,13 +938,6 @@ fn is_public_hardhat_dev_key(value: &str) -> bool {
         .any(|key| hex.eq_ignore_ascii_case(key))
 }
 
-fn contains_public_hardhat_dev_key(value: &str) -> bool {
-    let lower = value.to_ascii_lowercase();
-    HARDHAT_PUBLIC_DEV_KEYS
-        .iter()
-        .any(|key| lower.contains(key))
-}
-
 fn valid_solana_array(value: &str) -> bool {
     let Some(items) = value.strip_prefix('[').and_then(|v| v.strip_suffix(']')) else {
         return false;
@@ -956,6 +972,10 @@ fn valid_extended_private_key(value: &str) -> bool {
 }
 
 fn decode_base58check_payload(value: &str) -> Option<Vec<u8>> {
+    // The largest supported payload is a 78-byte extended key plus checksum.
+    if value.len() > 112 {
+        return None;
+    }
     let mut decoded = bs58::decode(value).into_vec().ok()?;
     if decoded.len() < 5 {
         return None;
@@ -979,24 +999,6 @@ fn valid_extended_public_key(value: &str) -> bool {
         && BIP32_PUBLIC_VERSIONS.iter().any(|(prefix, version)| {
             value.starts_with(prefix) && payload.get(..4) == Some(&version[..])
         })
-}
-
-fn is_wif_shape(value: &str) -> bool {
-    (50..=53).contains(&value.len())
-        && value
-            .as_bytes()
-            .first()
-            .is_some_and(|first| b"5KL9c".contains(first))
-}
-
-fn is_extended_key_shape(value: &str) -> bool {
-    (109..=113).contains(&value.len())
-        && (BIP32_PRIVATE_VERSIONS
-            .iter()
-            .any(|(prefix, _)| value.starts_with(prefix))
-            || BIP32_PUBLIC_VERSIONS
-                .iter()
-                .any(|(prefix, _)| value.starts_with(prefix)))
 }
 
 const BIP32_PRIVATE_VERSIONS: &[(&str, [u8; 4])] = &[
@@ -1051,55 +1053,177 @@ const HARDHAT_PUBLIC_DEV_KEYS: &[&str] = &[
 ];
 
 fn detect_labelled_secrets(text: &str, spans: &mut Vec<Span>) {
-    let mut scopes = vec![(0..text.len(), false)];
-    while let Some((scope, argument)) = scopes.pop() {
-        for caps in labelled_secret_rule().captures_iter(&text[scope.clone()]) {
-            let quoted = caps.name("double").or_else(|| caps.name("single"));
-            if let Some(v) = quoted.or_else(|| caps.name("bare")) {
-                let start = scope.start + v.start();
-                let end = scope.start + v.end();
-                let annotation = caps.name("colon").is_some();
-                let candidate = if quoted.is_none() && argument {
-                    &v.as_str()[..bare_argument_end(v.as_str(), annotation)]
-                } else {
-                    v.as_str()
-                };
-                let expression = if quoted.is_none() {
-                    delimited_expression(
-                        candidate,
-                        annotation,
-                        text[start + candidate.len()..].starts_with(['\'', '"']),
-                    )
-                } else {
-                    None
-                };
-                let value = if quoted.is_some() {
-                    candidate
-                } else {
-                    // Revisit nested assignments only within the captured bare
-                    // span. This also covers prefixes before quoted arguments
-                    // without extending beyond the streaming pattern's bound.
-                    if let Some((contents, tail)) = &expression {
-                        scopes.push((start + contents.start..start + contents.end, true));
-                        scopes.push((start + tail..end, argument));
-                    } else {
-                        scopes.push((start..end, argument));
+    let mut syntax = None;
+    let mut arguments = Vec::new();
+    let mut cursor = 0;
+    while let Some(caps) = labelled_secret_rule().captures_at(text, cursor) {
+        let quoted = caps.name("double").or_else(|| caps.name("single"));
+        let Some(v) = quoted.or_else(|| caps.name("bare")) else {
+            break;
+        };
+        let start = v.start();
+        let annotation = caps.name("colon").is_some();
+        while arguments.last().is_some_and(|&end| end <= start) {
+            arguments.pop();
+        }
+        let mut end = v.end();
+        let mut expression = None;
+        if quoted.is_none() {
+            let index = syntax.get_or_insert_with(|| AssignmentSyntax::new(text));
+            if v.as_str().ends_with(['(', '[', '<']) {
+                end = index.boundary(start, text.len());
+            }
+            if let Some(&limit) = arguments.last() {
+                end = index.argument_end(text, start, end.min(limit), annotation);
+            }
+            expression = index.expression(text, start, end, annotation);
+        }
+        if let Some((contents, _)) = expression {
+            cursor = start + contents.start;
+            arguments.push(start + contents.end);
+            continue;
+        }
+        let candidate = &text[start..end];
+        let value = if quoted.is_some() {
+            candidate
+        } else {
+            candidate
+                .split_ascii_whitespace()
+                .next()
+                .unwrap_or_default()
+                .trim_end_matches([',', ';'])
+        };
+        if value.len() >= 6
+            && !is_non_secret_assignment_value(value, quoted.is_some(), annotation)
+            && !is_public_hardhat_dev_key(value)
+        {
+            spans.push(Span::new(start, start + value.len(), "SECRET", 0.9));
+        }
+        cursor = if quoted.is_some() {
+            caps.get(0).map_or(end, |m| m.end())
+        } else {
+            start
+                + candidate
+                    .split_ascii_whitespace()
+                    .next()
+                    .unwrap_or_default()
+                    .len()
+        };
+    }
+}
+
+struct AssignmentSyntax {
+    closes: HashMap<usize, usize>,
+    boundaries: Vec<usize>,
+    next_boundary: usize,
+}
+
+impl AssignmentSyntax {
+    fn new(text: &str) -> Self {
+        let mut closes = HashMap::new();
+        let mut boundaries = Vec::new();
+        let mut stack = Vec::new();
+        for (offset, byte) in text.bytes().enumerate() {
+            match byte {
+                b'(' => stack.push((offset, b')')),
+                b'[' => stack.push((offset, b']')),
+                b'{' => stack.push((offset, b'}')),
+                b')' | b']' | b'}' => {
+                    if let Some((open, expected)) = stack.pop() {
+                        if byte == expected {
+                            closes.insert(open, offset + 1);
+                        } else {
+                            stack.clear();
+                        }
                     }
-                    candidate
-                        .split_ascii_whitespace()
-                        .next()
-                        .unwrap_or_default()
-                        .trim_end_matches([',', ';'])
-                };
-                if value.len() >= 6
-                    && !is_non_secret_assignment_value(value, quoted.is_some(), annotation)
-                    && !is_public_hardhat_dev_key(value)
-                    && expression.is_none()
-                {
-                    spans.push(Span::new(start, start + value.len(), "SECRET", 0.9));
                 }
+                b'\'' | b'"' | b'\r' | b'\n' | b'&' => {
+                    boundaries.push(offset);
+                    if byte == b'\'' || byte == b'"' {
+                        for (open, _) in stack.drain(..) {
+                            closes.insert(open, offset);
+                        }
+                    }
+                    stack.clear();
+                }
+                _ => {}
             }
         }
+        Self {
+            closes,
+            boundaries,
+            next_boundary: 0,
+        }
+    }
+
+    fn boundary(&mut self, start: usize, fallback: usize) -> usize {
+        while self
+            .boundaries
+            .get(self.next_boundary)
+            .is_some_and(|&end| end < start)
+        {
+            self.next_boundary += 1;
+        }
+        self.boundaries
+            .get(self.next_boundary)
+            .copied()
+            .unwrap_or(fallback)
+    }
+
+    fn argument_end(&self, text: &str, start: usize, end: usize, annotation: bool) -> usize {
+        if annotation {
+            return start + bare_argument_end(&text[start..end], true);
+        }
+        let mut cursor = start;
+        while cursor < end {
+            match text.as_bytes()[cursor] {
+                b',' | b')' | b']' | b'}' => return cursor,
+                b'(' | b'[' | b'{' => match self.closes.get(&cursor) {
+                    Some(&close) if close <= end => cursor = close,
+                    _ => return end,
+                },
+                _ => cursor += 1,
+            }
+        }
+        end
+    }
+
+    fn expression(
+        &self,
+        text: &str,
+        start: usize,
+        end: usize,
+        annotation: bool,
+    ) -> Option<(std::ops::Range<usize>, usize)> {
+        let value = &text[start..end];
+        let open = value.find(['(', '[', '<'])?;
+        if value.as_bytes()[open] == b'<' {
+            return delimited_expression(value, annotation, text[end..].starts_with(['\'', '"']));
+        }
+        if !value[..open]
+            .trim_end()
+            .split("::")
+            .all(|part| is_identifier(part) || is_dotted_identifier(part))
+        {
+            return None;
+        }
+        let close = *self.closes.get(&(start + open))?;
+        if close > end {
+            return None;
+        }
+        if text[close..].starts_with(['\'', '"']) && close == end {
+            return Some((open + 1..end - start, end - start));
+        }
+        let suffix = &text[close..end];
+        let complete = suffix.starts_with(char::is_whitespace)
+            || suffix
+                .split_ascii_whitespace()
+                .next()
+                .unwrap_or_default()
+                .trim_end_matches([',', ';'])
+                .bytes()
+                .all(|byte| byte == b')' || annotation && byte == b':');
+        complete.then_some((open + 1..close - start - 1, close - start))
     }
 }
 
@@ -1299,9 +1423,9 @@ fn is_public_identifier_candidate(s: &str) -> bool {
 
 fn is_entropy_exempt_token(value: &str) -> bool {
     is_public_identifier_candidate(value)
-        || is_wif_shape(value)
-        || is_extended_key_shape(value)
-        || contains_public_hardhat_dev_key(value)
+        || valid_wif(value)
+        || valid_extended_private_key(value)
+        || is_public_hardhat_dev_key(value)
 }
 
 /// Keyword values that are code expressions, type annotations, indirections,
@@ -1573,6 +1697,88 @@ mod tests {
     fn shannon_entropy_of_uniform_is_high() {
         assert!(shannon_entropy("abcdefghijklmnop") > 3.0);
         assert!(shannon_entropy("aaaaaaaaaaaaaaaa") < 0.1);
+    }
+
+    #[test]
+    fn validated_keyword_gate_covers_unicode_case_folded_matches() {
+        let hex = "a7".repeat(32);
+        let array = format!(
+            "[{}]",
+            (0..64).map(|n| n.to_string()).collect::<Vec<_>>().join(",")
+        );
+        for text in [
+            format!("ſeed=0x{hex}"),
+            format!(r#"{{"ſecretſeed":"0x{hex}"}}"#),
+            format!(r#"{{"privateKey":"{hex}"}}"#),
+            r#"{"ſecretphraſe":"private words for testing"}"#.to_owned(),
+            format!("Keypair={array}"),
+            format!("ſolana={}", bs58::encode([7; 64]).into_string()),
+        ] {
+            let mut hits = vec![false; ADDITIONAL_SECRET_PATTERNS.len()];
+            let _ = gitleaks::detect(&text, &mut hits);
+            let mut expected = Vec::new();
+            detect_validated_secrets(&text, &vec![true; hits.len()], &mut expected);
+            assert!(
+                !expected.is_empty(),
+                "fixture must match a validated regex: {text}"
+            );
+            let mut actual = Vec::new();
+            detect_validated_secrets(&text, &hits, &mut actual);
+            assert_eq!(actual, expected, "{text}");
+        }
+    }
+
+    #[test]
+    fn every_validated_regex_sample_reaches_its_keyword_gate() {
+        use proptest::strategy::{Strategy, ValueTree};
+        use proptest::test_runner::{Config, RngAlgorithm, TestRng, TestRunner};
+
+        let mut runner = TestRunner::new_with_rng(
+            Config::default(),
+            TestRng::from_seed(RngAlgorithm::ChaCha, &[11; 32]),
+        );
+        for (index, rule) in validated_secret_rules().iter().enumerate() {
+            if rule.keywords.is_empty() {
+                continue;
+            }
+            let sampling_form = rule.re.as_str().replace(r"\b", "");
+            let strategy = proptest::string::string_regex(&sampling_form).unwrap();
+            for _ in 0..32 {
+                let sample = strategy.new_tree(&mut runner).unwrap().current();
+                assert!(rule.re.is_match(&sample), "invalid sample: {sample:?}");
+                let mut hits = vec![false; ADDITIONAL_SECRET_PATTERNS.len()];
+                let _ = gitleaks::detect(&sample, &mut hits);
+                assert!(hits[index], "rule {} missed sample {sample:?}", rule.ty);
+            }
+        }
+    }
+
+    #[test]
+    fn opaque_tokens_are_not_exempt_by_private_key_shape_or_substring() {
+        let alphabet =
+            "Q7wE2r9T4y1U8i3O6p0A5sDf3Gh8Jk1Lz4Xc7Vb2Nm6Qa9Ws5Ed0Rf3Tg7Yh1Uj4Ik8Ol2Pz6Xm";
+        for token in [
+            format!("5{}", &alphabet[..50]),
+            format!(
+                "xprv{}",
+                alphabet.chars().cycle().take(107).collect::<String>()
+            ),
+            format!("{}{}", HARDHAT_PUBLIC_DEV_KEYS[0], alphabet.repeat(4)),
+        ] {
+            assert!(shannon_entropy(&token) >= 4.5);
+            assert!(entropy_backstop(&token)
+                .iter()
+                .any(|span| span.end == token.len()));
+        }
+    }
+
+    #[test]
+    fn base58check_payload_is_bounded_to_supported_formats() {
+        let mut bytes = vec![42; 128];
+        let checksum = Sha256::digest(Sha256::digest(&bytes));
+        bytes.extend_from_slice(&checksum[..4]);
+        let encoded = bs58::encode(bytes).into_string();
+        assert!(decode_base58check_payload(&encoded).is_none());
     }
 
     #[test]
