@@ -293,6 +293,7 @@ fn exempt_calls_do_not_hide_nested_secret_assignments() {
     for text in [
         "token=issue(secret=hunter2)",
         "token=issue(secret=derive(password=hunter2))",
+        "token=issue(secret=hunter2,other=nested('text'))",
     ] {
         assert_redacted(text, "hunter2", "SECRET");
     }
@@ -300,6 +301,8 @@ fn exempt_calls_do_not_hide_nested_secret_assignments() {
         "token=issue(secret=config.secret)",
         "token=issue(secret=derive(password=os.getenv('DB_PASSWORD')))",
         "token=self.tokenizer(text,add_special_tokens=False)",
+        "token=issue(secret=config.secret,other=nested('text'))",
+        "token=issue(secret=config.secret,other=nested(text))",
     ] {
         assert_eq!(detect_secrets(text), [], "code expression: {text}");
     }
@@ -323,4 +326,45 @@ fn angle_bracket_type_annotations_are_not_secrets() {
         assert_eq!(detect_secrets(text), [], "type annotation: {text}");
     }
     assert_redacted("password=Option<String>", "Option<String>", "SECRET");
+}
+
+#[test]
+fn spaced_expressions_and_generic_annotations_are_not_secrets() {
+    let mut hits = Vec::new();
+    for text in [
+        "token = tokenizer(text, add_special_tokens=False)",
+        "token = tokenizer (text)",
+        "token = std::env::var (\"TOKEN\")",
+        "token = cache[index + 1]",
+        "password: Option< String >",
+        "token: Promise< string >;",
+        "def f(password: Optional[str]):",
+    ] {
+        if !detect_secrets(text).is_empty() {
+            hits.push(text);
+        }
+    }
+    assert!(hits.is_empty(), "code redacted: {hits:#?}");
+}
+
+#[test]
+fn malformed_expression_shaped_passwords_are_not_exempted() {
+    let mut missed = Vec::new();
+    for value in [
+        "pass(word]9)",
+        "pass[wor)d]",
+        "pass(word)tail(",
+        "pass(word\n",
+    ] {
+        let text = format!("password={value}");
+        if detect_secrets(&text).is_empty() {
+            missed.push(text);
+        }
+    }
+    assert!(missed.is_empty(), "literal passwords missed: {missed:#?}");
+    assert_redacted(
+        "token=tokenizer(text) password=pass,word",
+        "pass,word",
+        "SECRET",
+    );
 }

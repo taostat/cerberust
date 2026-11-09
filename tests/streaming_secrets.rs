@@ -212,6 +212,9 @@ fn labelled_literals_and_defaults_never_leak_across_chunks() {
         format!("password = os.getenv ('DB_PASSWORD', '{secret}')\n"),
         format!("token=issue(secret={secret})\n"),
         format!("token=issue(secret=derive(password={secret}))\n"),
+        format!("token=issue(secret={secret},other=nested('text'))\n"),
+        format!("token=issue (secret={secret}, other=nested('text'))\n"),
+        format!("password=pass({secret}]9)\n"),
         format!("password='{secret}\nnext line\n"),
         format!("password=\"{secret}\\\r\nnext line\n"),
         format!("password='{secret}\\"),
@@ -226,6 +229,34 @@ fn labelled_literals_and_defaults_never_leak_across_chunks() {
                 unary,
                 "chunk_len={chunk_len}: {text:?}"
             );
+        }
+    }
+}
+
+#[test]
+fn spaced_code_expressions_remain_intact_across_chunks() {
+    for text in [
+        "token = tokenizer(text, add_special_tokens=False)\n",
+        "token = tokenizer (text)\n",
+        "token = std::env::var (\"TOKEN\")\n",
+        "token = cache[index + 1]\n",
+        "password: Option< String >\n",
+        "def f(password: Optional[str]):\n",
+        "token=issue(secret=config.secret,other=nested('text'))\n",
+    ] {
+        for chunk_len in 1..=8 {
+            let mut scanners = stack();
+            let mut runner = StreamOutput::new(&scanners);
+            let mut emitted = String::new();
+            for chunk in text.as_bytes().chunks(chunk_len) {
+                emitted.push_str(
+                    &runner
+                        .push(&mut scanners, std::str::from_utf8(chunk).unwrap())
+                        .unwrap(),
+                );
+            }
+            emitted.push_str(&runner.finish(&mut scanners).unwrap());
+            assert_eq!(emitted, text, "chunk_len={chunk_len}");
         }
     }
 }

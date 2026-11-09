@@ -562,7 +562,9 @@ const CREDENTIAL_PATTERNS: [&str; 2] = [
         r#"(?:(?:os\.getenv|os\.environ\.get|getenv)\s*\(\s*(?:"[^"\r\n]*"|'[^'\r\n]*')\s*,\s*(?:default\s*=\s*)?)?"#,
         r#"(?:"(?P<double>(?:\\[^\r\n]|[^"\\\r\n])*\\?)(?:"|[\r\n]|$)"#,
         r"|'(?P<single>(?:\\[^\r\n]|[^'\\\r\n])*\\?)(?:'|[\r\n]|$)",
-        r#"|(?P<bare>[^\s"'&]+))"#,
+        // Keep a possible expression through spaces, stopping at quotes or the
+        // line boundary. Delimiter validation below determines its actual end.
+        r#"|(?P<bare>[a-z_][a-z0-9_.:]*[ \t]*[\[(<][^\r\n"'&]*|[^\s"'&]+))"#,
     ),
     r"[a-z][a-z0-9+.\-]*://[^\s:/@]+:([^\s/@]+)@",
 ];
@@ -626,36 +628,7 @@ pub fn detect_secrets(text: &str) -> Vec<Span> {
             spans.push(Span::new(m.start(), m.end(), rule.ty, 0.99));
         }
     }
-    let mut search_start = 0;
-    while let Some(caps) = labelled_secret_rule().captures_at(text, search_start) {
-        let quoted = caps.name("double").or_else(|| caps.name("single"));
-        if let Some(v) = quoted.or_else(|| caps.name("bare")) {
-            let value = if quoted.is_some() {
-                v.as_str()
-            } else {
-                v.as_str().trim_end_matches([',', ';'])
-            };
-            // A fully captured call can contain another labelled assignment,
-            // e.g. token=issue(secret=hunter2). Revisit only complete bare calls:
-            // their outer regex match also holds every nested value in streaming.
-            // Re-entering a call prefix ending before a quoted argument could
-            // extend detection beyond that match and break the streaming bound.
-            search_start = if quoted.is_none() && value.ends_with([')', ']']) {
-                v.start()
-            } else {
-                v.end()
-            };
-            if value.len() >= 6
-                && !is_non_secret_assignment_value(
-                    value,
-                    quoted.is_some(),
-                    caps.name("colon").is_some(),
-                )
-            {
-                spans.push(Span::new(v.start(), v.start() + value.len(), "SECRET", 0.9));
-            }
-        }
-    }
+    detect_labelled_secrets(text, &mut spans);
     for caps in url_credential_rule().captures_iter(text) {
         if let Some(v) = caps.get(1) {
             spans.push(Span::new(v.start(), v.end(), "SECRET", 0.9));
@@ -663,6 +636,58 @@ pub fn detect_secrets(text: &str) -> Vec<Span> {
     }
     spans.extend(entropy_backstop(text));
     spans
+}
+
+fn detect_labelled_secrets(text: &str, spans: &mut Vec<Span>) {
+    let mut scopes = vec![(0..text.len(), false)];
+    while let Some((scope, argument)) = scopes.pop() {
+        for caps in labelled_secret_rule().captures_iter(&text[scope.clone()]) {
+            let quoted = caps.name("double").or_else(|| caps.name("single"));
+            if let Some(v) = quoted.or_else(|| caps.name("bare")) {
+                let start = scope.start + v.start();
+                let end = scope.start + v.end();
+                let annotation = caps.name("colon").is_some();
+                let candidate = if quoted.is_none() && argument {
+                    &v.as_str()[..bare_argument_end(v.as_str(), annotation)]
+                } else {
+                    v.as_str()
+                };
+                let expression = if quoted.is_none() {
+                    delimited_expression(
+                        candidate,
+                        annotation,
+                        text[start + candidate.len()..].starts_with(['\'', '"']),
+                    )
+                } else {
+                    None
+                };
+                let value = if quoted.is_some() {
+                    candidate
+                } else {
+                    // Revisit nested assignments only within the captured bare
+                    // span. This also covers prefixes before quoted arguments
+                    // without extending beyond the streaming pattern's bound.
+                    if let Some((contents, tail)) = &expression {
+                        scopes.push((start + contents.start..start + contents.end, true));
+                        scopes.push((start + tail..end, argument));
+                    } else {
+                        scopes.push((start..end, argument));
+                    }
+                    candidate
+                        .split_ascii_whitespace()
+                        .next()
+                        .unwrap_or_default()
+                        .trim_end_matches([',', ';'])
+                };
+                if value.len() >= 6
+                    && !is_non_secret_assignment_value(value, quoted.is_some(), annotation)
+                    && expression.is_none()
+                {
+                    spans.push(Span::new(start, start + value.len(), "SECRET", 0.9));
+                }
+            }
+        }
+    }
 }
 
 /// Shannon entropy (bits per char) of a byte string.
@@ -915,24 +940,11 @@ fn is_non_secret_assignment_value(value: &str, quoted: bool, annotation: bool) -
     if quoted {
         return false;
     }
-    if matches!(
+    matches!(
         lower.trim_end_matches([')', ']', '}', ':']),
         "none" | "null" | "undefined" | "true" | "false"
     ) || annotation && is_type_annotation(value.trim_end_matches([')', ':']))
         || is_dotted_identifier(reference)
-    {
-        return true;
-    }
-    // A complete call (or a call prefix before a quoted argument), not merely
-    // a password containing parentheses. Rust paths use `::` instead of `.`.
-    [('(', ')'), ('[', ']')].into_iter().any(|(open, close)| {
-        value.split_once(open).is_some_and(|(callee, _)| {
-            (value.ends_with(close) || value.ends_with(open))
-                && callee
-                    .split("::")
-                    .all(|part| is_identifier(part) || is_dotted_identifier(part))
-        })
-    })
 }
 
 fn assignment_reference_rule() -> &'static Regex {
@@ -945,40 +957,107 @@ fn assignment_reference_rule() -> &'static Regex {
 }
 
 fn is_type_annotation(value: &str) -> bool {
-    if value
-        .bytes()
-        .all(|byte| byte.is_ascii_alphabetic() || byte == b'_')
-    {
-        return matches!(
-            value.to_ascii_lowercase().as_str(),
-            "str"
-                | "string"
-                | "int"
-                | "integer"
-                | "float"
-                | "bool"
-                | "boolean"
-                | "bytes"
-                | "optional"
-                | "option"
-                | "list"
-                | "dict"
-                | "set"
-                | "tuple"
-                | "sequence"
-                | "mapping"
-        );
-    }
-    let Some(open) = value.find(['[', '<']) else {
-        return false;
-    };
+    matches!(
+        value.to_ascii_lowercase().as_str(),
+        "str"
+            | "string"
+            | "int"
+            | "integer"
+            | "float"
+            | "bool"
+            | "boolean"
+            | "bytes"
+            | "optional"
+            | "option"
+            | "list"
+            | "dict"
+            | "set"
+            | "tuple"
+            | "sequence"
+            | "mapping"
+    )
+}
+
+/// Recognize a code path followed by balanced delimiters. A candidate may end
+/// inside the expression only when the regex stopped at a quoted argument.
+/// Angle brackets denote generics only in annotation context.
+fn delimited_expression(
+    value: &str,
+    annotation: bool,
+    continued: bool,
+) -> Option<(std::ops::Range<usize>, usize)> {
+    let open = value.find(['(', '[', '<'])?;
     let (name, arguments) = value.split_at(open);
-    let close = if arguments.starts_with('[') { ']' } else { '>' };
-    arguments.ends_with(close)
-        && is_identifier(name)
-        && arguments[1..arguments.len() - 1]
-            .bytes()
-            .all(|byte| byte.is_ascii_alphanumeric() || b"_., []|?:<>".contains(&byte))
+    if !name
+        .trim_end()
+        .split("::")
+        .all(|part| is_identifier(part) || is_dotted_identifier(part))
+    {
+        return None;
+    }
+    let generic = arguments.starts_with('<');
+    if generic && !annotation {
+        return None;
+    }
+    let mut closers = Vec::new();
+    for (offset, byte) in arguments.bytes().enumerate() {
+        if generic && !byte.is_ascii_alphanumeric() && !b"_., []|?:<>".contains(&byte) {
+            return None;
+        }
+        match byte {
+            b'(' => closers.push(b')'),
+            b'[' => closers.push(b']'),
+            b'{' => closers.push(b'}'),
+            b'<' if generic => closers.push(b'>'),
+            b')' | b']' | b'}' | b'>' if byte != b'>' || generic => {
+                if closers.pop() != Some(byte) {
+                    return None;
+                }
+                if closers.is_empty() {
+                    // A nested assignment can include its enclosing calls'
+                    // closing parentheses in the same bare candidate.
+                    let suffix = arguments[offset + 1..]
+                        .split_ascii_whitespace()
+                        .next()
+                        .unwrap_or_default();
+                    // Whitespace after the expression separates subsequent
+                    // prose or assignments from this value.
+                    let complete = arguments[offset + 1..].starts_with(char::is_whitespace)
+                        || suffix
+                            .trim_end_matches([',', ';'])
+                            .bytes()
+                            .all(|b| b == b')' || annotation && b == b':');
+                    return complete.then_some((open + 1..open + offset, open + offset + 1));
+                }
+            }
+            _ => {}
+        }
+    }
+    continued.then_some((open + 1..value.len(), value.len()))
+}
+
+/// Within a recognized call, commas and closing delimiters separate arguments;
+/// inside a nested expression they remain part of that argument.
+fn bare_argument_end(value: &str, annotation: bool) -> usize {
+    let mut closers = Vec::new();
+    for (offset, byte) in value.bytes().enumerate() {
+        if closers.is_empty() && matches!(byte, b',' | b')' | b']' | b'}') {
+            return offset;
+        }
+        match byte {
+            b'(' => closers.push(b')'),
+            b'[' => closers.push(b']'),
+            b'{' => closers.push(b'}'),
+            b'<' if annotation => closers.push(b'>'),
+            b')' | b']' | b'}' | b'>'
+                if (byte != b'>' || annotation) && closers.pop() != Some(byte) =>
+            {
+                return value.len();
+            }
+            _ => {}
+        }
+    }
+    value.len()
 }
 
 fn is_dotted_identifier(value: &str) -> bool {
