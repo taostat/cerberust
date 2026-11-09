@@ -80,7 +80,9 @@ anyhow = { version = "1.0", optional = true }
 # crate, loading the model's `tokenizer.json` (a DeBERTa-v3 SentencePiece
 # tokenizer); `onig` is its default regexer. Both are large trees, hence the
 # off-by-default feature — the core scanner library never links them.
-ort = { version = "2.0.0-rc.12", default-features = false, features = [
+# This feature uses the rc.12 Session API; keep Cargo from floating to a later
+# prerelease with a breaking API change.
+ort = { version = "=2.0.0-rc.12", default-features = false, features = [
     "std",
     "download-binaries",
     "tls-native",
