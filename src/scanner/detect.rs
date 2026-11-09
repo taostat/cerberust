@@ -807,14 +807,15 @@ pub fn seed_phrase_hold_floor(buf: &[u8]) -> usize {
 /// URL-embedded passwords, and a high-entropy backstop over bare tokens.
 #[must_use]
 pub fn detect_secrets(text: &str) -> Vec<Span> {
-    let mut spans = gitleaks::detect(text);
+    let mut validated_hits = vec![false; ADDITIONAL_SECRET_PATTERNS.len()];
+    let mut spans = gitleaks::detect(text, &mut validated_hits);
     spans.extend(bip39::detect(text));
     for rule in secret_rules() {
         for m in rule.re.find_iter(text) {
             spans.push(Span::new(m.start(), m.end(), rule.ty, 0.99));
         }
     }
-    detect_validated_secrets(text, &mut spans);
+    detect_validated_secrets(text, &validated_hits, &mut spans);
     detect_labelled_secrets(text, &mut spans);
     for caps in url_credential_rule().captures_iter(text) {
         if let Some(v) = caps.get(1) {
@@ -825,10 +826,17 @@ pub fn detect_secrets(text: &str) -> Vec<Span> {
     spans
 }
 
-fn detect_validated_secrets(text: &str, spans: &mut Vec<Span>) {
-    let lower = text.to_ascii_lowercase();
-    for rule in validated_secret_rules() {
-        if !rule.keywords.is_empty() && !rule.keywords.iter().any(|word| lower.contains(word)) {
+/// Each validated rule's keywords, in rule order, for the shared keyword pass
+/// in [`gitleaks::detect`]. A rule with no keywords always runs.
+pub(super) fn validated_secret_keywords() -> impl Iterator<Item = &'static [&'static str]> {
+    ADDITIONAL_SECRET_PATTERNS
+        .iter()
+        .map(|(_, _, keywords, _, _)| *keywords)
+}
+
+fn detect_validated_secrets(text: &str, keyword_hits: &[bool], spans: &mut Vec<Span>) {
+    for (rule, &hit) in validated_secret_rules().iter().zip(keyword_hits) {
+        if !rule.keywords.is_empty() && !hit {
             continue;
         }
         for caps in rule.re.captures_iter(text) {
