@@ -133,6 +133,55 @@ fn vendor_secrets_never_leak_at_any_chunk_size() {
     }
 }
 
+#[test]
+fn structural_crypto_secrets_never_leak_at_any_chunk_size() {
+    let seed = format!("0x{}", "a7".repeat(32));
+    let ethereum_key = format!("0x{}", "d5".repeat(32));
+    let suri = format!("0x{}//hard", "91".repeat(32));
+    // Public format vectors documented by Bitcoin Wiki and BIP32.
+    let wif = "5HueCGU8rMjxEXxiPuD5BDku4MkFqeZyd4dZ1jvhTVqvbTLvyTJ".to_owned();
+    let xprv = "xprv9s21ZrQH143K31xYSDQpPDxsXRTUcvj2iNHm5NUtrGiGG5e2DtALGdso3pGz6ssrdK4PFmM8NSpSBHNqPqm55Qn3LqFtT2emdEXVYsCzC2U".to_owned();
+    let ai_key = format!("sk-ant-api03-{}AA", take(ALNUM, 93));
+    let cases = [
+        (
+            "BITTENSOR_SEED",
+            format!("btcli wallet create --seed {seed}\n"),
+            seed.clone(),
+        ),
+        (
+            "BITTENSOR_SEED",
+            format!(r#"{{"secretSeed":"{seed}"}}"#),
+            seed.clone(),
+        ),
+        (
+            "ETHEREUM_PRIVATE_KEY",
+            format!("PRIVATE_KEY={ethereum_key}\n"),
+            ethereum_key.clone(),
+        ),
+        ("SUBSTRATE_SECRET_URI", format!("{suri}\n"), suri),
+        ("BITCOIN_WIF", format!("{wif}\n"), wif),
+        ("BIP32_EXTENDED_PRIVATE_KEY", format!("{xprv}\n"), xprv),
+        (
+            "ANTHROPIC_API_KEY",
+            format!("Authorization: Bearer {ai_key}\n"),
+            ai_key,
+        ),
+    ];
+    for (ty, response, secret) in cases {
+        assert!(
+            detect_secrets(&response).iter().any(|span| span.ty == ty),
+            "{ty} not detected unary"
+        );
+        for chunk_len in 1..=8 {
+            let emitted = stream(&response, chunk_len, &secret);
+            assert!(
+                emitted.contains("[REDACTED_"),
+                "{ty} not redacted at chunk_len {chunk_len}"
+            );
+        }
+    }
+}
+
 /// Replace sentinel nonces so two stacks' outputs compare structurally.
 fn normalize(s: &str) -> String {
     regex::Regex::new(r"_[0-9a-f]{8}\]")

@@ -1388,6 +1388,28 @@ mod tests {
     }
 
     #[test]
+    fn ssn_rejects_unassigned_areas_groups_and_serials() {
+        for ssn in [
+            "000-12-3456",
+            "666-12-3456",
+            "900-12-3456",
+            "999-12-3456",
+            "123-00-6789",
+            "123-45-0000",
+        ] {
+            assert!(
+                !detect_structured(ssn)
+                    .iter()
+                    .any(|span| span.ty == "US_SSN"),
+                "invalid SSN accepted: {ssn}"
+            );
+        }
+        assert!(detect_structured("123-45-6789")
+            .iter()
+            .any(|span| span.ty == "US_SSN"));
+    }
+
+    #[test]
     fn iban_accepts_valid_rejects_bad_checksum() {
         // Published ISO 13616 test IBANs across countries, spaced and contiguous.
         assert!(iban_ok("GB82 WEST 1234 5698 7654 32"));

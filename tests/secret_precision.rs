@@ -11,7 +11,7 @@
     reason = "tests assert on known-good values"
 )]
 
-use cerberust::scanner::detect::detect_secrets;
+use cerberust::scanner::detect::{detect_secrets, resolve_overlaps};
 use cerberust::{ScanCtx, Scanner, SecretScanner};
 use rand::distributions::{Alphanumeric, DistString};
 use rand::rngs::StdRng;
@@ -132,6 +132,230 @@ fn provider_keys_and_secret_formats_still_redact() {
         &mnemonic,
         "SEED_PHRASE",
     );
+}
+
+fn assert_type(text: &str, secret: &str, entity: &str) {
+    let spans = resolve_overlaps(detect_secrets(text));
+    assert!(
+        spans
+            .iter()
+            .any(|s| s.ty == entity && &text[s.start..s.end] == secret),
+        "{entity} did not match {secret:?}: {spans:?}"
+    );
+}
+
+fn assert_no_new_crypto_type(text: &str) {
+    const TYPES: &[&str] = &[
+        "BITTENSOR_SEED",
+        "BITTENSOR_PRIVATE_KEY",
+        "BITTENSOR_SECRET_PHRASE",
+        "SUBSTRATE_SECRET_URI",
+        "ETHEREUM_PRIVATE_KEY",
+        "BITCOIN_WIF",
+        "BIP32_EXTENDED_PRIVATE_KEY",
+        "SOLANA_KEYPAIR",
+    ];
+    let found: Vec<_> = detect_secrets(text)
+        .into_iter()
+        .filter(|span| TYPES.contains(&span.ty.as_str()))
+        .collect();
+    assert!(found.is_empty(), "unexpected crypto spans: {found:?}");
+}
+
+#[test]
+fn bittensor_seed_and_keyfile_fields_are_structural() {
+    let seed = format!("0x{}", "a7".repeat(32));
+    assert_type(
+        &format!("btcli wallet create --seed {seed}"),
+        &seed,
+        "BITTENSOR_SEED",
+    );
+    assert_type(
+        &format!(r#"{{"secretSeed":"{seed}"}}"#),
+        &seed,
+        "BITTENSOR_SEED",
+    );
+
+    let private64 = "b3".repeat(32);
+    let private128 = "c4".repeat(64);
+    for private_key in [&private64, &private128] {
+        let value = format!("0x{private_key}");
+        assert_type(
+            &format!(r#"{{"privateKey":"{value}"}}"#),
+            &value,
+            "BITTENSOR_PRIVATE_KEY",
+        );
+    }
+
+    let phrase = std::iter::repeat_n("abandon", 11)
+        .chain(["about"])
+        .collect::<Vec<_>>()
+        .join(" ");
+    assert_type(
+        &format!(r#"{{"secretPhrase":"{phrase}"}}"#),
+        &phrase,
+        "BITTENSOR_SECRET_PHRASE",
+    );
+
+    for text in [
+        "--seed 42",
+        "seed = 1234",
+        "rng.seed(0x123456789abc)",
+        "seed = 0x123456789abc",
+        &format!("block hash 0x{}", "d1".repeat(32)),
+        "{\"secretSeed\":\"0x1234\"}",
+    ] {
+        assert_no_new_crypto_type(text);
+    }
+}
+
+#[test]
+fn ethereum_private_keys_require_named_assignments() {
+    let key = format!("0x{}", "d5".repeat(32));
+    for name in [
+        "private_key",
+        "privateKey",
+        "PRIVATE_KEY",
+        "priv_key",
+        "ETH_PRIVATE_KEY",
+        "DEPLOYER_PRIVATE_KEY",
+        "secret_key",
+    ] {
+        let text = format!("export {name}='{key}'");
+        assert_type(&text, &key, "ETHEREUM_PRIVATE_KEY");
+    }
+
+    let bare = format!("0x{}", "e6".repeat(32));
+    assert_no_new_crypto_type(&bare);
+    assert_no_new_crypto_type(&format!("pk={bare}"));
+    assert_no_new_crypto_type(&format!("PRIVATE_KEY=0x{}", "aa".repeat(31)));
+
+    for key in hardhat_dev_keys() {
+        let text = format!("PRIVATE_KEY=0x{key}");
+        assert_no_new_crypto_type(&text);
+        assert!(
+            detect_secrets(&text).is_empty(),
+            "public dev key flagged: {text}"
+        );
+    }
+}
+
+/// Public deterministic local development keys from the documented default
+/// mnemonic. These keys must remain unredacted in local config examples.
+fn hardhat_dev_keys() -> [&'static str; 20] {
+    [
+        "ac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80",
+        "59c6995e998f97a5a0044966f0945389dc9e86dae88c7a8412f4603b6b78690d",
+        "5de4111afa1a4b94908f83103eb1f1706367c2e68ca870fc3fb9a804cdab365a",
+        "7c852118294e51e653712a81e05800f419141751be58f605c371e15141b007a6",
+        "47e179ec197488593b187f80a00eb0da91f1b9d0b13f8733639f19c30a34926a",
+        "8b3a350cf5c34c9194ca85829a2df0ec3153be0318b5e2d3348e872092edffba",
+        "92db14e403b83dfe3df233f83dfa3a0d7096f21ca9b0d6d6b8d88b2b4ec1564e",
+        "4bbbf85ce3377467afe5d46f804f221813b2bb87f24d81f60f1fcdbf7cbf4356",
+        "dbda1821b80551c9d65939329250298aa3472ba22feea921c0cf5d620ea67b97",
+        "2a871d0798f97d79848a013d4936a73bf4cc922c825d33c1cf7073dff6d409c6",
+        "f214f2b2cd398c806f84e317254e0f0b801d0643303237d97a22a48e01628897",
+        "701b615bbdfb9de65240bc28bd21bbc0d996645a3dd57e7b12bc2bdf6f192c82",
+        "a267530f49f8280200edf313ee7af6b827f2a8bce2897751d06a843f644967b1",
+        "47c99abed3324a2707c28affff1267e45918ec8c3f20b8aa892e8b065d2942dd",
+        "c526ee95bf44d8fc405a158bb884d9d1238d99f0612e9f33d006bb0789009aaa",
+        "8166f546bab6da521a8369cab06c5d2b9e46670292d85c875ee9ec20e84ffb61",
+        "ea6c44ac03bff858b476bba40716402b03e41b8e97e276d1baec7c37d42484a0",
+        "689af8efa8c651a91ad287602527f3af2fe9f6501a7ac4b061667b5a93e037fd",
+        "de9be858da4a475276426320d5e9262ecfc3ba460bfac56360bfa6c4c28b4ee0",
+        "df57089febbacf7ba0bc227dafbffa9fc08a93fdc68e1e42411a14efcf23656e",
+    ]
+}
+
+#[test]
+fn substrate_secret_uris_validate_the_secret_phrase() {
+    let raw = format!("0x{}", "91".repeat(32));
+    let suri = format!("{raw}//hard/soft///password");
+    assert_type(&suri, &suri, "SUBSTRATE_SECRET_URI");
+
+    let phrase = std::iter::repeat_n("abandon", 11)
+        .chain(["about"])
+        .collect::<Vec<_>>()
+        .join(" ");
+    let mnemonic_uri = format!("{phrase}//account/0");
+    assert_type(&mnemonic_uri, &mnemonic_uri, "SUBSTRATE_SECRET_URI");
+
+    let invalid = std::iter::repeat_n("abandon", 12)
+        .collect::<Vec<_>>()
+        .join(" ");
+    assert_no_new_crypto_type(&format!("{invalid}//account"));
+    assert_no_new_crypto_type("//Alice");
+    assert_no_new_crypto_type("//Bob//stash");
+    assert_no_new_crypto_type("//Ferdie");
+    assert_no_new_crypto_type(
+        "bottom drive obey lake curtain smoke basket hold race lonely fit walk",
+    );
+    assert_no_new_crypto_type(
+        "bottom drive obey lake curtain smoke basket hold race lonely fit walk//Alice",
+    );
+    assert_no_new_crypto_type(&raw);
+}
+
+#[test]
+fn bitcoin_private_keys_require_base58check_and_private_versions() {
+    // Public WIF test vector from the Bitcoin Wiki format example.
+    let wif = "5HueCGU8rMjxEXxiPuD5BDku4MkFqeZyd4dZ1jvhTVqvbTLvyTJ";
+    assert_type(wif, wif, "BITCOIN_WIF");
+
+    let xprv = "xprv9s21ZrQH143K31xYSDQpPDxsXRTUcvj2iNHm5NUtrGiGG5e2DtALGdso3pGz6ssrdK4PFmM8NSpSBHNqPqm55Qn3LqFtT2emdEXVYsCzC2U";
+    assert_type(xprv, xprv, "BIP32_EXTENDED_PRIVATE_KEY");
+
+    for public in [
+        "xpub661MyMwAqRbcFW31YEwpkMuc5THy2PSt5bDMsktWQcFF8syAmRUapSCGu8ED9W6oDMSgv6Zz8idoc4a6mr8BDzTJY47LJhkJ8UB7WEGuduB",
+        "tpubD6NzVbkrYhZ4XJDrzRvuxHEyQaPd1mwwdDofEJwekX18tAdsqeKfxss79AJzg1431FybXg5rfpTrJF4iAhyR7RubberdzEQXiRmXGADH2eA",
+    ] {
+        assert_no_new_crypto_type(public);
+        assert!(detect_secrets(public).is_empty(), "public key flagged: {public}");
+    }
+
+    let mut bad_wif = wif.as_bytes().to_vec();
+    let last = bad_wif.len() - 1;
+    bad_wif[last] = if bad_wif[last] == b"1"[0] {
+        b"2"[0]
+    } else {
+        b"1"[0]
+    };
+    let bad_wif = String::from_utf8(bad_wif).unwrap();
+    assert_no_new_crypto_type(&bad_wif);
+}
+
+#[test]
+fn solana_keypair_values_need_a_keyword_and_exact_byte_shape() {
+    let values: Vec<String> = (0..64).map(|n| n.to_string()).collect();
+    let array = format!("[{}]", values.join(","));
+    let json = format!(r#"{{"secretKey":{array}}}"#);
+    assert_type(&json, &array, "SOLANA_KEYPAIR");
+
+    let bytes: Vec<u8> = (0..64).collect();
+    let encoded = bs58::encode(bytes).into_string();
+    let json = format!(r#"{{"secretKey":"{encoded}"}}"#);
+    assert_type(&json, &encoded, "SOLANA_KEYPAIR");
+
+    let short: Vec<String> = (0..63).map(|n| n.to_string()).collect();
+    assert_no_new_crypto_type(&format!(r#"{{"secretKey":[{}]}}"#, short.join(",")));
+    assert_no_new_crypto_type(&format!(r#"{{"secretKey":"{encoded}0"}}"#));
+    assert_no_new_crypto_type(&array);
+}
+
+#[test]
+fn gm_and_partner_keys_accept_test_environment_prefixes() {
+    let body = "9a".repeat(32);
+    for (prefix, ty) in [
+        ("gm_test_", "GM_API_KEY"),
+        ("bm_test_", "BLOCKMACHINE_API_KEY"),
+        ("ts_test_", "TAOSTATS_API_KEY"),
+    ] {
+        let key = format!("{prefix}{body}");
+        assert_type(&format!("token {key}"), &key, ty);
+        let near_miss = format!("{prefix}{}g", &body[..63]);
+        assert_no_new_crypto_type(&near_miss);
+        assert!(!detect_secrets(&near_miss).iter().any(|span| span.ty == ty));
+    }
 }
 
 #[test]

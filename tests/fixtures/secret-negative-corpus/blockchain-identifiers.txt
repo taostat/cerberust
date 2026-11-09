@@ -1,0 +1,10 @@
+Explorer transaction:
+  Ethereum tx hash: 0x8f2a4c6e0b1d3f5879a2c4e6f80b1d3f5879a2c4e6f80b1d3f5879a2c4e6f80b1
+  Bittensor block hash: 0x91a3c5e70f2d4b6981a3c5e70f2d4b6981a3c5e70f2d4b6981a3c5e70f2d4b69
+  Git commit: 9f86d081884c7d659a2feaa0c55ad015a3bf4f1b
+  EIP-55 sender: 0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266
+
+RPC response:
+{"result":{"hash":"0xabababababababababababababababababababababababababababababababab",
+"parentHash":"0xcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd",
+"from":"0x70997970C51812dc3A010C7d01b50e0d17dc79C8"}}

@@ -2,13 +2,16 @@
 
 Ordinary prompt content for `tests/secret_precision.rs`: source code (Rust,
 Python, TypeScript, Go, SQL), web and JSON logs, stack traces, API responses,
-prose (including a run of BIP39 wordlist words with an invalid checksum),
-hashes and digests, base64 data URIs and code samples, Bittensor SS58 addresses
-and hashes, lockfile integrity/checksum lines, Kubernetes YAML, and docs with
-placeholder keys. `secret-precision-regressions.txt` records confirmed false
-positives from git and image digests, SRI, type annotations, code expressions,
-and lockfiles.
+transaction and block hashes, mixed-case public addresses, Git SHAs, Substrate
+development URIs, the public development phrase, BIP32 public vectors, Bitcoin
+addresses, local development account keys, RNG seeds, and documentation
+placeholders. It also includes prose with BIP39 wordlist words and an invalid
+checksum, base64 data URIs, Bittensor SS58 addresses, lockfile integrity values,
+and Kubernetes YAML. `secret-precision-regressions.txt` records prior false
+positives from image digests, SRI, type annotations, code expressions, and
+lockfiles.
 
-Everything here is synthetic. Identifiers, hashes and checksummed public
-addresses use deterministic test data; no credential is included. The precision
-test requires zero findings outside the original format-specific vendor rules.
+Everything here is synthetic or a public-by-design development/test vector.
+The Hardhat and Anvil account values are the documented local-only defaults and
+must not be used on a public network. The precision test requires zero findings
+outside the original format-specific vendor rules.
