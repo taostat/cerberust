@@ -14,6 +14,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- The generic secret entropy backstop now requires at least three character
+  classes and leaves checksum-valid SS58 AccountId and Bitcoin Base58Check
+  addresses and valid SRI digest strings intact. Labelled-secret matching skips
+  type annotations, code expressions, environment/template references and
+  common placeholders.
 - `ScannerStack::run_input` stores `ScanCtx::prompt` only when an input or
   output scanner in the stack needs it; otherwise the prompt is cleared, so a
   stack of built-in scanners no longer keeps a copy of the last input.

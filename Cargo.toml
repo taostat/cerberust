@@ -51,6 +51,12 @@ hex = "0.4"
 # dependency.
 hmac = "0.12"
 sha2 = "0.10"
+# SS58 public-address exemptions need the chain's Blake2b-512 checksum. The
+# RustCrypto `blake2` crate is small, maintained with the same `digest` API as
+# `sha2`, and adds no platform dependency.
+blake2 = "0.10"
+# Decode candidate public Base58 identifiers before validating their checksums.
+bs58 = { version = "0.5", default-features = false, features = ["alloc"] }
 
 # The WASM guard runner (feature `wasm`). `wasmtime` is the reference
 # WebAssembly Component Model runtime; it loads a user-submitted guard component

@@ -11,7 +11,9 @@
 
 use std::sync::OnceLock;
 
+use blake2::Blake2b512;
 use regex::Regex;
+use sha2::{Digest, Sha256};
 
 use super::{bip39, gitleaks};
 
@@ -611,7 +613,9 @@ pub fn detect_secrets(text: &str) -> Vec<Span> {
     }
     for caps in labelled_secret_rule().captures_iter(text) {
         if let Some(v) = caps.get(1) {
-            spans.push(Span::new(v.start(), v.end(), "SECRET", 0.9));
+            if !is_non_secret_assignment_value(v.as_str()) {
+                spans.push(Span::new(v.start(), v.end(), "SECRET", 0.9));
+            }
         }
     }
     for caps in url_credential_rule().captures_iter(text) {
@@ -654,9 +658,250 @@ fn is_hexish(s: &str) -> bool {
     s.len() >= 16 && s.bytes().all(|b| b.is_ascii_hexdigit())
 }
 
-/// High-entropy token backstop: flags whitespace-delimited tokens that look
-/// like opaque credentials. base64 ≥4.5 bits/char, hex ≥3.0. Catches the
-/// bespoke internal token that matches no vendor pattern.
+/// Whether a candidate has enough character-class diversity for an opaque
+/// credential. Pure hex digests and lowercase/alphanumeric identifiers have at
+/// most two classes, so they do not reach the entropy check.
+fn has_character_class_diversity(s: &str) -> bool {
+    let mut classes = [false; 4];
+    for byte in s.bytes() {
+        let class = if byte.is_ascii_lowercase() {
+            0
+        } else if byte.is_ascii_uppercase() {
+            1
+        } else if byte.is_ascii_digit() {
+            2
+        } else {
+            3
+        };
+        classes[class] = true;
+    }
+    classes.into_iter().filter(|present| *present).count() >= 3
+}
+
+/// A valid SS58 `AccountId` address (one- or two-byte network prefix, 32-byte
+/// account id, two-byte Blake2b-512 checksum).
+fn is_ss58_address(s: &str) -> bool {
+    if !(45..=50).contains(&s.len()) {
+        return false;
+    }
+    let Ok(decoded) = bs58::decode(s).into_vec() else {
+        return false;
+    };
+    let prefix_len = match decoded.len() {
+        35 if decoded[0] < 64 => 1,
+        36 if (decoded[0] & 0b1100_0000) == 0b0100_0000 => 2,
+        _ => return false,
+    };
+    if decoded.len() != prefix_len + 32 + 2 {
+        return false;
+    }
+
+    let mut hasher = Blake2b512::new();
+    hasher.update(b"SS58PRE");
+    hasher.update(&decoded[..decoded.len() - 2]);
+    let checksum = hasher.finalize();
+    decoded[decoded.len() - 2..] == checksum[..2]
+}
+
+/// Whether a candidate is a Bitcoin-style `Base58Check` public address. Restrict
+/// to the standard 20-byte P2PKH/P2SH payloads and network version bytes, then
+/// verify the four-byte double-SHA-256 checksum.
+fn is_base58check_address(s: &str) -> bool {
+    if !(26..=35).contains(&s.len()) {
+        return false;
+    }
+    let Ok(decoded) = bs58::decode(s).into_vec() else {
+        return false;
+    };
+    if decoded.len() != 25 || !matches!(decoded[0], 0 | 5 | 111 | 196) {
+        return false;
+    }
+    let first_hash = Sha256::digest(&decoded[..21]);
+    let second_hash = Sha256::digest(first_hash);
+    decoded[21..] == second_hash[..4]
+}
+
+/// Recognize standard SRI strings by algorithm prefix and exact Base64 digest
+/// length, including canonical padding bits.
+fn is_sri_hash(s: &str) -> bool {
+    let Some((algorithm, encoded)) = s.split_once('-') else {
+        return false;
+    };
+    let (data_chars, padding) = match algorithm {
+        "sha256" => (43, 1),
+        "sha384" => (64, 0),
+        "sha512" => (86, 2),
+        _ => return false,
+    };
+    if encoded.len() != data_chars + padding {
+        return false;
+    }
+    let (data, pad) = encoded.split_at(data_chars);
+    if !data.bytes().all(is_base64_char)
+        || !pad.bytes().all(|byte| byte == b'=')
+        || pad.len() != padding
+    {
+        return false;
+    }
+    let Some(last) = data.bytes().last().and_then(base64_value) else {
+        return false;
+    };
+    match padding {
+        1 => last.trailing_zeros() >= 2,
+        2 => last.trailing_zeros() >= 4,
+        _ => true,
+    }
+}
+
+fn is_base64_char(byte: u8) -> bool {
+    byte.is_ascii_alphanumeric() || byte == b'+' || byte == b'/'
+}
+
+fn base64_value(byte: u8) -> Option<u8> {
+    match byte {
+        b'A'..=b'Z' => Some(byte - b'A'),
+        b'a'..=b'z' => Some(byte - b'a' + 26),
+        b'0'..=b'9' => Some(byte - b'0' + 52),
+        b'+' => Some(62),
+        b'/' => Some(63),
+        _ => None,
+    }
+}
+
+/// The entropy input is sometimes a URL path or wrapped code literal. Ignore
+/// common punctuation around a complete public address, and recognize an
+/// address as the final component of an otherwise ordinary ASCII path.
+fn is_public_identifier_candidate(s: &str) -> bool {
+    if is_sri_hash(s) {
+        return true;
+    }
+    let bare = s.trim_matches(|ch: char| !ch.is_ascii_alphanumeric());
+    if is_ss58_address(bare) || is_base58check_address(bare) {
+        return true;
+    }
+    if !s
+        .bytes()
+        .all(|byte| byte.is_ascii_alphanumeric() || b"/._~-".contains(&byte))
+    {
+        return false;
+    }
+    let Some((prefix, address)) = s.rsplit_once('/') else {
+        return false;
+    };
+    let simple_path = prefix.starts_with('/')
+        && prefix
+            .split('/')
+            .filter(|part| !part.is_empty())
+            .all(|part| part.len() <= 16);
+    simple_path && (is_ss58_address(address) || is_base58check_address(address))
+}
+
+/// Keyword values that are code expressions, type annotations, indirections,
+/// or conventional placeholders rather than literal credentials.
+fn is_non_secret_assignment_value(value: &str) -> bool {
+    let value = value.trim();
+    if value.is_empty()
+        || value.ends_with(',')
+        || value.starts_with('<') && value.ends_with('>')
+        || value.contains('(')
+        || value.contains(')')
+        || value.contains('[')
+        || value.contains(']')
+        || value.contains('$')
+        || value.starts_with("{{")
+        || value.ends_with("}}")
+        || value.starts_with('%') && value.ends_with('%')
+    {
+        return true;
+    }
+
+    let normalized = value.trim_matches(|ch: char| matches!(ch, ',' | ';' | ')' | ']' | '}'));
+    let lower = normalized.to_ascii_lowercase();
+    if matches!(
+        lower.as_str(),
+        "str"
+            | "string"
+            | "int"
+            | "integer"
+            | "float"
+            | "bool"
+            | "boolean"
+            | "bytes"
+            | "none"
+            | "null"
+            | "undefined"
+            | "true"
+            | "false"
+            | "changeme"
+            | "change_me"
+            | "example"
+            | "example_key"
+            | "sample"
+            | "dummy"
+            | "placeholder"
+            | "todo"
+            | "xxx"
+            | "your_token"
+            | "your_password"
+            | "your_secret"
+            | "your_api_key"
+    ) || lower.starts_with("your-")
+        || lower.starts_with("example_")
+        || lower.starts_with("sample_")
+        || lower.starts_with("replace_me")
+        || lower.starts_with("insert_")
+        || lower.ends_with("_token")
+        || lower.ends_with("_password")
+        || lower.ends_with("_secret")
+        || lower.ends_with("_api_key")
+    {
+        return true;
+    }
+
+    if is_type_annotation(normalized) || is_dotted_identifier(normalized) {
+        return true;
+    }
+    false
+}
+
+fn is_type_annotation(value: &str) -> bool {
+    if value
+        .bytes()
+        .all(|byte| byte.is_ascii_alphabetic() || byte == b'_')
+    {
+        return matches!(
+            value.to_ascii_lowercase().as_str(),
+            "optional" | "option" | "list" | "dict" | "set" | "tuple" | "sequence" | "mapping"
+        );
+    }
+    let Some((name, arguments)) = value.split_once('[') else {
+        return false;
+    };
+    arguments.ends_with(']')
+        && is_identifier(name)
+        && arguments[..arguments.len() - 1]
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || b"_., []|?".contains(&byte))
+}
+
+fn is_dotted_identifier(value: &str) -> bool {
+    let mut parts = value.split('.');
+    parts.next().is_some_and(is_identifier)
+        && parts.next().is_some_and(is_identifier)
+        && parts.all(is_identifier)
+}
+
+fn is_identifier(value: &str) -> bool {
+    let mut bytes = value.bytes();
+    bytes
+        .next()
+        .is_some_and(|first| first.is_ascii_alphabetic() || first == b'_')
+        && bytes.all(|byte| byte.is_ascii_alphanumeric() || byte == b'_')
+}
+
+/// High-entropy token backstop: flags diverse whitespace-delimited tokens that
+/// look like opaque credentials. base64 ≥4.5 bits/char, hex ≥3.0. Catches a
+/// bespoke mixed-class token that matches no vendor pattern.
 fn entropy_backstop(text: &str) -> Vec<Span> {
     let mut spans = Vec::new();
     for (start, tok) in split_with_offsets(text) {
@@ -664,7 +909,11 @@ fn entropy_backstop(text: &str) -> Vec<Span> {
         // Test the cheap character-class predicates before computing entropy: a
         // long prose word is neither hex nor base64, so it never pays for the
         // entropy scan.
-        if len >= 20 && (is_hexish(tok) || is_base64ish(tok)) {
+        if len >= 20
+            && (is_hexish(tok) || is_base64ish(tok))
+            && has_character_class_diversity(tok)
+            && !is_public_identifier_candidate(tok)
+        {
             let ent = shannon_entropy(tok);
             let hit = (is_hexish(tok) && ent >= 3.0) || (is_base64ish(tok) && ent >= 4.5);
             if hit {
@@ -726,6 +975,29 @@ mod tests {
     fn shannon_entropy_of_uniform_is_high() {
         assert!(shannon_entropy("abcdefghijklmnop") > 3.0);
         assert!(shannon_entropy("aaaaaaaaaaaaaaaa") < 0.1);
+    }
+
+    #[test]
+    fn ss58_checksum_accepts_valid_address_and_rejects_bad_checksum() {
+        let valid = "5GrwvaEF5zXb26Fz9rcQpDWS57CtERHpNehXCPcNoHGKutQY";
+        let invalid = "5FHBJCMkqnBzGh6s8hx1LNUyycVTdWfjzgQQs7XZNmbDzXJR";
+        assert!(is_ss58_address(valid));
+        assert!(!is_ss58_address(invalid));
+    }
+
+    #[test]
+    fn base58check_and_sri_validators_require_exact_encodings() {
+        let bitcoin = "14YomMWKx4jzD34ESv7HzpNhU6wojtLFGW";
+        assert!(is_base58check_address(bitcoin));
+        let mut corrupted = bitcoin.as_bytes().to_vec();
+        corrupted[10] = if corrupted[10] == b'1' { b'2' } else { b'1' };
+        let corrupted = std::str::from_utf8(&corrupted).unwrap();
+        assert!(!is_base58check_address(corrupted));
+
+        assert!(is_sri_hash(
+            "sha384-oqVuAfXRKap7fdgcCY5uykM6+R9GqQ8K/uxy9rx7HNQlGYl1kPzQho1wx4JwY8wC"
+        ));
+        assert!(!is_sri_hash("sha384-not-a-valid-integrity-value"));
     }
 
     #[test]

@@ -1,11 +1,10 @@
-//! Precision check for the secret detectors added with the gitleaks port.
+//! Precision check for secret detection in ordinary developer prompts.
 //!
 //! `tests/fixtures/secret-negative-corpus/` holds ordinary prompt content with
 //! no real credentials (see its README). `SecretScanner` redacts one-way, so a
-//! false positive permanently damages a prompt: the ported vendor rules, the
-//! Taostats key patterns and the seed-phrase detector must find nothing here.
-//! The pre-existing detectors (the original vendor patterns, labelled secrets
-//! and the entropy backstop) are out of scope for this check.
+//! false positive permanently damages a prompt. This check includes the generic
+//! `SECRET` findings as well as the ported rules and seed-phrase detector. The
+//! original, format-specific vendor patterns remain outside this check.
 #![allow(
     clippy::unwrap_used,
     clippy::expect_used,
@@ -13,8 +12,12 @@
 )]
 
 use cerberust::scanner::detect::detect_secrets;
+use cerberust::{ScanCtx, Scanner, SecretScanner};
+use rand::distributions::{Alphanumeric, DistString};
+use rand::rngs::StdRng;
+use rand::SeedableRng;
 
-/// Entity types the detector emitted before the gitleaks port.
+/// Original format-specific entity types that predate the gitleaks port.
 const PRE_EXISTING: &[&str] = &[
     "AWS_ACCESS_KEY",
     "GITHUB_TOKEN",
@@ -23,7 +26,6 @@ const PRE_EXISTING: &[&str] = &[
     "GOOGLE_API_KEY",
     "SLACK_WEBHOOK",
     "PRIVATE_KEY",
-    "SECRET",
 ];
 
 fn corpus() -> Vec<(String, String)> {
@@ -63,4 +65,71 @@ fn new_detectors_find_nothing_in_ordinary_prompts() {
         }
     }
     assert!(hits.is_empty(), "false positives: {hits:#?}");
+}
+
+fn assert_redacted(text: &str, secret: &str, entity: &str) {
+    let mut ctx = ScanCtx::new();
+    let verdict = SecretScanner::new().scan(text, &mut ctx).unwrap();
+    assert!(
+        verdict.text.contains(&format!("[REDACTED_{entity}_")),
+        "{entity} was not redacted: {text:?}"
+    );
+    assert!(
+        !verdict.text.contains(secret),
+        "{entity} leaked in redacted output: {:?}",
+        verdict.text
+    );
+}
+
+#[test]
+fn provider_keys_and_secret_formats_still_redact() {
+    // Synthetic values exercise the existing vendored provider rules.
+    let github_body: String = "Q7wE2r9T4y1U8i3O6p0A5sD".chars().cycle().take(82).collect();
+    let github = format!("github_pat_{github_body}");
+    assert_redacted(
+        &format!("token {github}"),
+        &github,
+        "GITHUB_FINE_GRAINED_PAT",
+    );
+
+    let anthropic_body: String = "Q7wE2r9T4y1U8i3O6p0A5sD".chars().cycle().take(93).collect();
+    let anthropic = format!("sk-ant-api03-{anthropic_body}AA");
+    assert_redacted(
+        &format!("token {anthropic}"),
+        &anthropic,
+        "ANTHROPIC_API_KEY",
+    );
+
+    let mut rng = StdRng::seed_from_u64(0x5ec7_2026);
+    let mixed_token = Alphanumeric.sample_string(&mut rng, 48);
+    let text = format!("api_key={mixed_token}");
+    assert_redacted(&text, &mixed_token, "SECRET");
+    assert_redacted(
+        &format!("opaque candidate {mixed_token}"),
+        &mixed_token,
+        "SECRET",
+    );
+
+    let pem = std::fs::read_to_string(
+        "tests/fixtures/secret-positive-corpus/test-only-rsa-private-key.pem",
+    )
+    .unwrap();
+    assert_redacted(&pem, &pem, "PRIVATE_KEY");
+
+    // A test-only JWT with realistic structure and a generated signature.
+    let jwt_signature = Alphanumeric.sample_string(&mut rng, 43);
+    let jwt = format!(
+        "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMjM0NTY3ODkwIiwibmFtZSI6IkFsaWNlIiwiaWF0IjoxNTE2MjM5MDIyfQ.{jwt_signature}"
+    );
+    assert_redacted(&format!("Authorization: Bearer {jwt}"), &jwt, "JWT");
+
+    let mnemonic = std::iter::repeat_n("abandon", 11)
+        .chain(["about"])
+        .collect::<Vec<_>>()
+        .join(" ");
+    assert_redacted(
+        &format!("wallet seed: {mnemonic}"),
+        &mnemonic,
+        "SEED_PHRASE",
+    );
 }

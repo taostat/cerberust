@@ -88,6 +88,11 @@ Four layers of detection, all emitting spans into the shared redact path:
 2. **Labelled secrets** — `password=…`, `api_key: …`, `token = …`, and
    `scheme://user:password@host` URL credentials. Here it redacts **just the
    value**, not the label, so `password=hunter2` becomes `password=[REDACTED…]`.
+   Values shaped like type annotations, function calls, attribute references,
+   environment-variable/template references, or common placeholders are left
+   intact. For example, `password: Optional[str] = None`,
+   `token = self.tokenizer(text)`, `password=${DB_PASSWORD}` and
+   `token=YOUR_TOKEN` do not produce labelled-secret redactions.
 
 3. **Seed phrases** — runs of words from the BIP39 English wordlist, redacted as
    `SEED_PHRASE`. Words may be separated by whitespace, commas, semicolons,
@@ -101,10 +106,13 @@ Four layers of detection, all emitting spans into the shared redact path:
 
 4. **High-entropy backstop** — for the credential that matches no known pattern.
    Each whitespace-delimited token that *looks* like an opaque secret (long, and
-   either hex or base64-ish) has its Shannon entropy measured; high-entropy tokens
-   are flagged. This is what catches your in-house token format without you writing
-   a pattern for it. The cheap character-class check runs first, so ordinary prose
-   words never pay for the entropy scan.
+   either hex or base64-ish) must contain at least three of lowercase letters,
+   uppercase letters, digits and symbols before its Shannon entropy is measured.
+   This keeps pure-hex hashes and lowercase/alphanumeric identifiers out of the
+   generic `SECRET` path; pure-hex credentials need a format-specific rule.
+   Checksum-valid SS58 AccountId addresses and Bitcoin P2PKH/P2SH Base58Check
+   addresses, plus syntactically valid SRI digests, are also left intact. The
+   character-class and identifier checks run before the entropy calculation.
 
 All hits are interned into the vault under a **one-way** policy: redacted on input,
 never restored. Even if you pair the stack with a PII restorer, secrets stay masked,
@@ -149,7 +157,9 @@ match. The last row is the worst case for that: every rule runs.
 The streaming hold-back DFA over all secret patterns is compiled once per pattern
 set and reused across streams, and keeps its state cache across pushes.
 
-`tests/secret_precision.rs` checks the ported rules, Taostats key patterns and
-seed-phrase detector against a corpus of ordinary prompt content (code in several
-languages, logs, stack traces, JSON, prose, hashes, data URIs, SS58 addresses) and
-requires zero detections.
+`tests/secret_precision.rs` checks the ported rules, Taostats key patterns,
+seed-phrase detector and generic `SECRET` findings against ordinary prompt
+content. Its corpus includes code in several languages, logs, stack traces,
+JSON, prose, hashes, lockfile checksums and integrity values, code data, and
+checksum-valid public addresses; it requires zero detections outside the
+original format-specific vendor rules.
