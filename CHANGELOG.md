@@ -15,6 +15,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   hold-back.
 - `gm_test_`, `bm_test_`, and `ts_test_` keys, retaining their existing entity
   types and exact 64-character lowercase-hex shape.
+- `InvisibleTextScanner` removes bidi controls and tag characters outside
+  complete subdivision flag sequences from input, or blocks in block mode.
 - `Scanner::needs_prompt()` (default `true`) declares whether a scanner reads
   `ScanCtx::prompt`. Built-in scanners return `false`.
 

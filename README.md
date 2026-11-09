@@ -102,6 +102,7 @@ cargo features, since they pull heavy dependencies.)
 | [`PiiScanner`](docs/scanners/pii.md) | leaking emails, phone numbers, credit cards, IPs, SSNs, and IBANs to a model provider | redact (round-trip — restore in the reply) |
 | [`SecretScanner`](docs/scanners/secrets.md) | API keys, tokens, private keys and seed phrases pasted into a prompt reaching a provider or being echoed back (includes 200 rules ported from gitleaks) | redact, one-way (never restored) |
 | [`RegexScanner`](docs/scanners/regex.md) | your *own* sensitive formats — ticket ids, account numbers, internal tokens | redact your patterns |
+| [`InvisibleTextScanner`](docs/scanners/invisible-text.md) | hidden tags/bidi | redact/block |
 | [`BanSubstringsScanner`](docs/scanners/ban-substrings.md) | specific phrases you never want in a prompt or a reply | block on match |
 | [`BanTopicsScanner`](docs/scanners/ban-topics.md) | whole subjects you've ruled out, defined by keywords | block on match |
 | [`TokenLimitScanner`](docs/scanners/token-limit.md) | oversized prompts blowing your context budget or your bill | block when over the limit |
