@@ -10,8 +10,8 @@
 //!
 //! Matching is literal, not regex — a banned-words list does not need a pattern
 //! engine — with an optional case-insensitivity flag. Case-insensitive matching
-//! lower-cases a scratch copy to find byte offsets, then redacts the original
-//! text at those offsets so casing outside the match is preserved.
+//! searches the original bytes directly (folding ASCII case only), then redacts
+//! the original text at those offsets so casing outside the match is preserved.
 
 use crate::scanner::detect::{resolve_overlaps, Span};
 use crate::scanner::{
@@ -89,30 +89,60 @@ impl BanSubstringsScanner {
     /// returned for overlap resolution before redaction; for the block path only
     /// their emptiness matters.
     fn hits(&self, text: &str) -> Vec<Span> {
-        let haystack = if self.case_sensitive {
-            text.to_owned()
-        } else {
-            text.to_ascii_lowercase()
-        };
         let mut spans = Vec::new();
         for needle in &self.substrings {
             if needle.is_empty() {
                 continue;
             }
-            let needle = if self.case_sensitive {
-                needle.clone()
-            } else {
-                needle.to_ascii_lowercase()
-            };
             let mut from = 0;
-            while let Some(rel) = haystack[from..].find(&needle) {
-                let start = from + rel;
+            while let Some(start) = if self.case_sensitive {
+                text[from..].find(needle).map(|rel| from + rel)
+            } else {
+                find_ascii_case_insensitive(text, needle, from)
+            } {
                 let end = start + needle.len();
                 spans.push(Span::new(start, end, BANNED_LABEL, HIT_RISK));
                 from = end;
             }
         }
         spans
+    }
+}
+
+/// Find an ASCII-case-insensitive match without making a lower-cased copy of
+/// the full input. `str::find(char)` locates candidates for either ASCII case of
+/// the first character; the byte comparison verifies the remaining needle with
+/// the same ASCII-only folding used by `to_ascii_lowercase`.
+fn find_ascii_case_insensitive(text: &str, needle: &str, from: usize) -> Option<usize> {
+    let first = needle.chars().next()?;
+    let lower = first.to_ascii_lowercase();
+    let upper = first.to_ascii_uppercase();
+    let needle_bytes = needle.as_bytes();
+    let mut search_from = from;
+
+    loop {
+        let tail = text.get(search_from..)?;
+        let lower_hit = tail.find(lower);
+        let upper_hit = if upper == lower {
+            lower_hit
+        } else {
+            tail.find(upper)
+        };
+        let relative = match (lower_hit, upper_hit) {
+            (Some(lower), Some(upper)) => lower.min(upper),
+            (Some(hit), None) | (None, Some(hit)) => hit,
+            (None, None) => return None,
+        };
+        let start = search_from + relative;
+        let end = start.checked_add(needle_bytes.len())?;
+        if text
+            .as_bytes()
+            .get(start..end)
+            .is_some_and(|candidate| candidate.eq_ignore_ascii_case(needle_bytes))
+        {
+            return Some(start);
+        }
+        search_from = start + first.len_utf8();
     }
 }
 
@@ -127,6 +157,10 @@ impl Scanner for BanSubstringsScanner {
 
     fn disposition(&self) -> Disposition {
         self.disposition
+    }
+
+    fn needs_prompt(&self) -> bool {
+        false
     }
 
     fn scan<'a>(&self, text: &'a str, ctx: &mut ScanCtx) -> ScanResult<'a> {
@@ -222,6 +256,37 @@ mod tests {
         let scanner = BanSubstringsScanner::new(["forbidden".to_owned()]).case_insensitive();
         let mut ctx = ScanCtx::new();
         assert!(!scanner.scan("this is FORBIDDEN", &mut ctx).unwrap().valid);
+    }
+
+    proptest::proptest! {
+        #[test]
+        fn case_insensitive_search_matches_ascii_lowercase_semantics(
+            text_chars in proptest::collection::vec(proptest::prelude::any::<char>(), 0..64),
+            needle_chars in proptest::collection::vec(proptest::prelude::any::<char>(), 0..8),
+            from_offset in 0usize..64,
+        ) {
+            let text: String = text_chars.into_iter().collect();
+            let needle: String = needle_chars.into_iter().collect();
+            let from = text
+                .char_indices()
+                .map(|(index, _)| index)
+                .chain(std::iter::once(text.len()))
+                .find(|&index| index >= from_offset)
+                .unwrap_or(text.len());
+            let expected = if needle.is_empty() {
+                None
+            } else {
+                let lower_text = text.to_ascii_lowercase();
+                let lower_needle = needle.to_ascii_lowercase();
+                lower_text[from..]
+                    .find(&lower_needle)
+                    .map(|relative| from + relative)
+            };
+            proptest::prop_assert_eq!(
+                find_ascii_case_insensitive(&text, &needle, from),
+                expected,
+            );
+        }
     }
 
     #[test]

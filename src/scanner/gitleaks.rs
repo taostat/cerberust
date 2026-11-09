@@ -291,10 +291,13 @@ fn secret_match(group: usize, caps: &Captures) -> Option<(usize, usize)> {
 }
 
 fn contains_stopword(secret: &str, stopwords: &[&str]) -> bool {
-    let lower = secret.to_ascii_lowercase();
-    stopwords
-        .iter()
-        .any(|w| lower.contains(&w.to_ascii_lowercase()))
+    stopwords.iter().any(|word| {
+        word.is_empty()
+            || secret
+                .as_bytes()
+                .windows(word.len())
+                .any(|candidate| candidate.eq_ignore_ascii_case(word.as_bytes()))
+    })
 }
 
 fn globally_allowed(c: &Compiled, secret: &str) -> bool {
@@ -457,6 +460,14 @@ mod tests {
     fn global_stopword_drops_a_placeholder() {
         assert!(contains_stopword(
             "xxabcdefghijklmnopqrstuvwxyzxx",
+            GLOBAL_STOPWORDS
+        ));
+        assert!(contains_stopword(
+            "xxAbCdEfGhIjKlMnOpQrStUvWxYzxx",
+            GLOBAL_STOPWORDS
+        ));
+        assert!(!contains_stopword(
+            "xxＡBCDEFGHIJKLMNOPQRSTUVWXYZxx",
             GLOBAL_STOPWORDS
         ));
         let placeholder: String = "abcdefghijklmnopqrstuvwxyz0123456789"
