@@ -48,7 +48,7 @@ pub struct ScanCtx {
     /// The shared placeholder↔original map. Any scanner may intern into it on
     /// input; restore reads it on output.
     pub vault: Vault,
-    /// The original prompt, set on the input path when an output scanner needs
+    /// The original prompt, refreshed on each input run when any scanner needs
     /// it. This carries LLM Guard's output `scan(prompt, output)` second
     /// argument without widening the per-call signature.
     pub prompt: Option<String>,
@@ -109,13 +109,13 @@ pub trait Scanner: Send + Sync {
     /// Whether this scanner may block, or only transforms.
     fn disposition(&self) -> Disposition;
 
-    /// Whether an output scanner needs the original input prompt in
+    /// Whether this scanner needs the original input prompt in
     /// [`ScanCtx::prompt`].
     ///
     /// The default is `true` to preserve existing custom scanners that read the
-    /// public prompt field. Scanners that do not use it should return `false`;
-    /// input-only scanners can leave the default unchanged. The stack checks
-    /// this once when it is constructed.
+    /// public prompt field, on either input or output. Scanners that do not use
+    /// it should return `false`. The stack checks this once when it is
+    /// constructed, so the answer must remain constant for its lifetime.
     fn needs_prompt(&self) -> bool {
         true
     }
@@ -296,7 +296,10 @@ impl ScannerStack {
                 Direction::Output => output.push(scanner),
             }
         }
-        let retain_prompt = output.iter().any(|scanner| scanner.needs_prompt());
+        let retain_prompt = input
+            .iter()
+            .chain(&output)
+            .any(|scanner| scanner.needs_prompt());
         Self {
             input,
             output,
@@ -361,8 +364,8 @@ impl ScannerStack {
     /// `Block` scanner returning `valid = false` short-circuits to [`Blocked`]
     /// when `fail_fast` — the request is rejected before any model forward.
     ///
-    /// The prompt is recorded on the context only when an output scanner needs
-    /// to read it.
+    /// The original prompt is refreshed before any scanner runs when an input
+    /// or output scanner needs it; otherwise any previous prompt is cleared.
     ///
     /// # Errors
     /// Returns [`Blocked`] when a `Block` scanner rejects and `fail_fast` is set.
@@ -572,19 +575,22 @@ mod tests {
         fn disposition(&self) -> Disposition {
             Disposition::Transform
         }
+        fn needs_prompt(&self) -> bool {
+            false
+        }
         fn scan<'a>(&self, text: &'a str, _ctx: &mut ScanCtx) -> ScanResult<'a> {
             Ok(Verdict::transformed(Cow::Borrowed(text)))
         }
     }
 
-    /// Models an existing custom output scanner that reads the original prompt.
-    struct PromptReader;
+    /// Models an existing custom scanner that reads the original prompt.
+    struct PromptReader(Direction);
     impl Scanner for PromptReader {
         fn id(&self) -> ScannerId {
             ScannerId("test:prompt-reader")
         }
         fn direction(&self) -> Direction {
-            Direction::Output
+            self.0
         }
         fn disposition(&self) -> Disposition {
             Disposition::Transform
@@ -642,13 +648,13 @@ mod tests {
     }
 
     #[test]
-    fn clean_stack_preserves_text_and_vault_without_output_readers() {
+    fn clean_stack_preserves_text_and_vault_and_clears_an_unused_prompt() {
         let mut vault = Vault::deterministic(b"test-key");
         let sentinel = vault.intern("EMAIL", "kept@example.com", true);
         let mut stack = ScannerStack::with_ctx(
             vec![Box::new(BorrowedPass)],
             true,
-            ScanCtx::new().with_vault(vault),
+            ScanCtx::new().with_vault(vault).with_prompt("stale prompt"),
         );
 
         assert_eq!(
@@ -668,6 +674,7 @@ mod tests {
         let mut stack = ScannerStack::new(
             vec![
                 Box::new(BorrowedPass),
+                Box::new(crate::scanners::TokenLimitScanner::new(100)),
                 Box::new(crate::scanners::RestoreScanner::for_pii()),
             ],
             true,
@@ -686,20 +693,39 @@ mod tests {
 
     #[test]
     fn output_scanner_can_still_read_the_original_prompt() {
-        let prompt = "contact alice@example.com";
         let mut stack = ScannerStack::new(
             vec![
                 Box::new(crate::scanners::PiiScanner::new()),
-                Box::new(PromptReader),
+                Box::new(PromptReader(Direction::Output)),
             ],
             true,
         );
 
-        let redacted = stack.run_input(prompt).unwrap();
-        assert!(redacted.contains("[REDACTED_EMAIL_1_"));
-        assert!(!redacted.contains(prompt));
-        assert_eq!(stack.ctx().prompt.as_deref(), Some(prompt));
-        assert_eq!(stack.run_output("model response").unwrap(), prompt);
+        for prompt in ["contact alice@example.com", "next: éß bob@example.com"] {
+            let redacted = stack.run_input(prompt).unwrap();
+            assert!(redacted.contains("[REDACTED_EMAIL_"));
+            assert!(!redacted.contains(prompt));
+            assert_eq!(stack.ctx().prompt.as_deref(), Some(prompt));
+            assert_eq!(stack.run_output("model response").unwrap(), prompt);
+
+            let mut stream = crate::middleware::stream::StreamOutput::new(&stack);
+            assert_eq!(stream.push(&mut stack, "response").unwrap(), "");
+            assert_eq!(stream.finish(&mut stack).unwrap(), prompt);
+        }
+    }
+
+    #[test]
+    fn input_scanner_reads_each_original_prompt_after_an_earlier_rewrite() {
+        let mut stack = ScannerStack::with_ctx(
+            vec![Box::new(Upper), Box::new(PromptReader(Direction::Input))],
+            true,
+            ScanCtx::new().with_prompt("stale prompt"),
+        );
+
+        for prompt in ["first original prompt", "next original prompt: éß"] {
+            assert_eq!(stack.run_input(prompt).unwrap(), prompt);
+            assert_eq!(stack.ctx().prompt.as_deref(), Some(prompt));
+        }
     }
 
     #[test]

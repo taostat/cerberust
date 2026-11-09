@@ -67,6 +67,10 @@ impl Scanner for TokenLimitScanner {
         Disposition::Block
     }
 
+    fn needs_prompt(&self) -> bool {
+        false
+    }
+
     fn scan<'a>(&self, text: &'a str, _ctx: &mut ScanCtx) -> ScanResult<'a> {
         let over = approx_token_count(text) > self.max_tokens;
         let risk = if over { 1.0 } else { 0.0 };

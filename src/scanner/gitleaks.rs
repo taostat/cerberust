@@ -481,6 +481,28 @@ mod tests {
     }
 
     #[test]
+    fn stopwords_keep_ascii_only_folding_and_empty_word_semantics() {
+        for (secret, word, expected) in [
+            ("🦀 éfOO!", "éFoo", true),
+            ("🦀 ÉfOO!", "éFoo", false),
+            ("İBAR", "İbar", true),
+            ("İBAR", "ibar", false),
+            ("straße", "STRASSE", false),
+            ("\u{212a}ey", "key", false),
+            ("", "", true),
+            ("secret", "", true),
+            ("", "nonempty", false),
+        ] {
+            assert_eq!(
+                contains_stopword(secret, &[word]),
+                expected,
+                "{secret:?}, {word:?}"
+            );
+        }
+        assert!(!contains_stopword("secret", &[]));
+    }
+
+    #[test]
     fn low_entropy_value_is_dropped() {
         // Artifactory API keys carry a 4.5-bit entropy minimum.
         let varied: String = "Zq8Xw3Rt6Yp1Lk9Mn2Bv5Cx7Hj4Gf0Ds"

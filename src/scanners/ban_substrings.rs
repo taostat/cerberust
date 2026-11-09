@@ -110,9 +110,10 @@ impl BanSubstringsScanner {
 }
 
 /// Find an ASCII-case-insensitive match without making a lower-cased copy of
-/// the full input. `str::find(char)` locates candidates for either ASCII case of
-/// the first character; the byte comparison verifies the remaining needle with
-/// the same ASCII-only folding used by `to_ascii_lowercase`.
+/// the full input. A single search locates the next candidate in either ASCII
+/// case of the first character; separate searches would repeatedly scan the
+/// entire remaining tail if one case is absent. The byte comparison verifies
+/// the remaining needle with the same ASCII-only folding as `to_ascii_lowercase`.
 fn find_ascii_case_insensitive(text: &str, needle: &str, from: usize) -> Option<usize> {
     let first = needle.chars().next()?;
     let lower = first.to_ascii_lowercase();
@@ -122,17 +123,7 @@ fn find_ascii_case_insensitive(text: &str, needle: &str, from: usize) -> Option<
 
     loop {
         let tail = text.get(search_from..)?;
-        let lower_hit = tail.find(lower);
-        let upper_hit = if upper == lower {
-            lower_hit
-        } else {
-            tail.find(upper)
-        };
-        let relative = match (lower_hit, upper_hit) {
-            (Some(lower), Some(upper)) => lower.min(upper),
-            (Some(hit), None) | (None, Some(hit)) => hit,
-            (None, None) => return None,
-        };
+        let relative = tail.find([lower, upper])?;
         let start = search_from + relative;
         let end = start.checked_add(needle_bytes.len())?;
         if text
@@ -256,6 +247,34 @@ mod tests {
         let scanner = BanSubstringsScanner::new(["forbidden".to_owned()]).case_insensitive();
         let mut ctx = ScanCtx::new();
         assert!(!scanner.scan("this is FORBIDDEN", &mut ctx).unwrap().valid);
+    }
+
+    #[test]
+    fn case_insensitive_search_handles_a_large_repeated_prefix() {
+        // Searching separately for 'a' and absent 'A' rescans the entire tail
+        // for every candidate, making this clean prefix quadratic to scan.
+        let mut text = "a".repeat(8 * 1024 * 1024);
+        text.push('b');
+        let scanner = BanSubstringsScanner::new(["ab".to_owned()]).case_insensitive();
+        let verdict = scanner.scan(&text, &mut ScanCtx::new()).unwrap();
+        assert!(!verdict.valid);
+        assert_eq!(verdict.text, text);
+    }
+
+    #[test]
+    fn case_insensitive_redaction_preserves_unicode_and_original_casing() {
+        let scanner = BanSubstringsScanner::new(["éFoo".to_owned(), "İbAr".to_owned()])
+            .case_insensitive()
+            .redacting();
+        let mut ctx = ScanCtx::new().with_vault(crate::Vault::with_nonce("test".to_owned()));
+        let text = "🦀 éfOO Éfoo İBAR ibar ß SS";
+        let verdict = scanner.scan(text, &mut ctx).unwrap();
+        let first = "[REDACTED_BANNED_SUBSTRING_1_test]";
+        let second = "[REDACTED_BANNED_SUBSTRING_2_test]";
+        assert_eq!(verdict.text, format!("🦀 {first} Éfoo {second} ibar ß SS"));
+        assert_eq!(ctx.vault.original_for(first), Some("éfOO"));
+        assert_eq!(ctx.vault.original_for(second), Some("İBAR"));
+        assert_eq!(ctx.vault.len(), 2);
     }
 
     proptest::proptest! {
