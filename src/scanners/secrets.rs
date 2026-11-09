@@ -81,6 +81,10 @@ impl Scanner for SecretScanner {
         Disposition::Transform
     }
 
+    fn needs_prompt(&self) -> bool {
+        false
+    }
+
     fn scan<'a>(&self, text: &'a str, ctx: &mut ScanCtx) -> ScanResult<'a> {
         let spans = resolve_overlaps(detect_secrets(text));
         let restorable =

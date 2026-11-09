@@ -23,10 +23,11 @@ use std::hint::black_box;
 use std::time::{Duration, Instant};
 
 use cerberust::scanners::{BanSubstringsScanner, PiiScanner, RegexScanner, SecretScanner};
-use cerberust::{ScanCtx, Scanner};
+use cerberust::{ScanCtx, Scanner, ScannerStack};
 
 const SIZES: [usize; 5] = [8, 16, 32, 64, 128];
 const REPEATS: usize = 5;
+const LARGE_STACK_BYTES: usize = 10 * 1024 * 1024;
 type BenchmarkCase = (&'static str, Box<dyn Scanner>, fn(usize) -> String);
 
 fn main() {
@@ -113,6 +114,44 @@ fn main() {
             println!("{name},{kib},{redactions},{:.1}", duration_micros(median));
         }
     }
+
+    bench_large_pii_secrets_stack();
+}
+
+/// Measure the public stack path for a large clean leaf: unlike the individual
+/// scanner cases above, this includes input threading, context retention and
+/// per-scanner metrics snapshots.
+fn bench_large_pii_secrets_stack() {
+    let text = repeated(LARGE_STACK_BYTES, "safe! ");
+    let mut warm_stack = pii_secrets_stack();
+    let warm_output = warm_stack.run_input(&text).unwrap();
+    assert_eq!(warm_output, text);
+    black_box((warm_output.len(), warm_stack.ctx().vault.len()));
+
+    let mut samples = Vec::with_capacity(REPEATS);
+    for _ in 0..REPEATS {
+        let mut stack = pii_secrets_stack();
+        let start = Instant::now();
+        let output = stack.run_input(&text).unwrap();
+        let elapsed = start.elapsed();
+        assert_eq!(output.len(), text.len());
+        black_box((output, stack.ctx().vault.len()));
+        samples.push(elapsed);
+    }
+    samples.sort_unstable();
+    let median = samples[REPEATS / 2];
+    println!(
+        "stack_pii_secrets_clean,{},0,{:.1}",
+        LARGE_STACK_BYTES / 1024,
+        duration_micros(median)
+    );
+}
+
+fn pii_secrets_stack() -> ScannerStack {
+    ScannerStack::new(
+        vec![Box::new(PiiScanner::new()), Box::new(SecretScanner::new())],
+        true,
+    )
 }
 
 fn duration_micros(duration: Duration) -> f64 {

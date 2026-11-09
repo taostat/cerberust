@@ -48,9 +48,8 @@ pub struct ScanCtx {
     /// The shared placeholder↔original map. Any scanner may intern into it on
     /// input; restore reads it on output.
     pub vault: Vault,
-    /// The original prompt, set once on the input path. Output scanners
-    /// that need it (relevance, factual-consistency, later additions) read it
-    /// here — this carries LLM Guard's output `scan(prompt, output)` second
+    /// The original prompt, set on the input path when an output scanner needs
+    /// it. This carries LLM Guard's output `scan(prompt, output)` second
     /// argument without widening the per-call signature.
     pub prompt: Option<String>,
     /// How a restored original is encoded before it is spliced back into the
@@ -109,6 +108,17 @@ pub trait Scanner: Send + Sync {
 
     /// Whether this scanner may block, or only transforms.
     fn disposition(&self) -> Disposition;
+
+    /// Whether an output scanner needs the original input prompt in
+    /// [`ScanCtx::prompt`].
+    ///
+    /// The default is `true` to preserve existing custom scanners that read the
+    /// public prompt field. Scanners that do not use it should return `false`;
+    /// input-only scanners can leave the default unchanged. The stack checks
+    /// this once when it is constructed.
+    fn needs_prompt(&self) -> bool {
+        true
+    }
 
     /// Inspect/transform `text`. The borrowed [`Verdict::text`] lets a pure
     /// detector return the input with zero allocation.
@@ -258,6 +268,7 @@ pub struct Blocked {
 pub struct ScannerStack {
     input: Vec<Box<dyn Scanner>>,
     output: Vec<Box<dyn Scanner>>,
+    retain_prompt: bool,
     fail_fast: bool,
     ctx: ScanCtx,
     report: ScanReport,
@@ -285,9 +296,11 @@ impl ScannerStack {
                 Direction::Output => output.push(scanner),
             }
         }
+        let retain_prompt = output.iter().any(|scanner| scanner.needs_prompt());
         Self {
             input,
             output,
+            retain_prompt,
             fail_fast,
             ctx,
             report: ScanReport::default(),
@@ -348,12 +361,13 @@ impl ScannerStack {
     /// `Block` scanner returning `valid = false` short-circuits to [`Blocked`]
     /// when `fail_fast` — the request is rejected before any model forward.
     ///
-    /// The prompt is recorded on the context for output scanners to read.
+    /// The prompt is recorded on the context only when an output scanner needs
+    /// to read it.
     ///
     /// # Errors
     /// Returns [`Blocked`] when a `Block` scanner rejects and `fail_fast` is set.
     pub fn run_input(&mut self, text: &str) -> Result<String, Blocked> {
-        self.ctx.prompt = Some(text.to_owned());
+        self.ctx.prompt = self.retain_prompt.then(|| text.to_owned());
         let mut current = text.to_owned();
         for scanner in &self.input {
             // A malfunction on input is treated as clean-pass here; the
@@ -372,7 +386,9 @@ impl ScannerStack {
             );
             self.report.record(scanner.id(), &verdict, metrics);
             let blocked = !verdict.valid && scanner.disposition() == Disposition::Block;
-            current = verdict.text.into_owned();
+            if let Some(next) = replacement_if_changed(&current, verdict.text) {
+                current = next;
+            }
             if blocked && self.fail_fast {
                 return Err(Blocked {
                     scanner: scanner.id(),
@@ -407,7 +423,9 @@ impl ScannerStack {
             );
             self.report.record(scanner.id(), &verdict, metrics);
             let blocked = !verdict.valid && scanner.disposition() == Disposition::Block;
-            current = verdict.text.into_owned();
+            if let Some(next) = replacement_if_changed(&current, verdict.text) {
+                current = next;
+            }
             if blocked && self.fail_fast {
                 return Err(Blocked {
                     scanner: scanner.id(),
@@ -419,6 +437,21 @@ impl ScannerStack {
     }
 }
 
+/// Convert a verdict's text to a replacement only when it differs from the
+/// current allocation. The common clean-scanner case returns the same borrowed
+/// slice, which must stay in place without allocating another full-text copy.
+fn replacement_if_changed(current: &str, next: std::borrow::Cow<'_, str>) -> Option<String> {
+    match next {
+        std::borrow::Cow::Borrowed(borrowed)
+            if borrowed.as_ptr() == current.as_ptr() && borrowed.len() == current.len() =>
+        {
+            None
+        }
+        std::borrow::Cow::Borrowed(borrowed) => Some(borrowed.to_owned()),
+        std::borrow::Cow::Owned(owned) => Some(owned),
+    }
+}
+
 /// A point-in-time copy of the vault's per-type intern and restore tallies, taken
 /// before a scanner runs so the run loop can diff it afterwards to attribute
 /// redactions and restores to that scanner. Counts and type labels only.
@@ -427,8 +460,9 @@ struct VaultSnapshot {
     restored: BTreeMap<String, u32>,
 }
 
-/// Snapshot the vault's type-keyed tallies. Cheap: a copy of two small maps of
-/// `(type_label, count)`, no plaintext.
+/// Snapshot the vault's type-keyed tallies. The copy scales with distinct
+/// entity-type labels, not the number or size of vault entries, and holds no
+/// plaintext.
 fn vault_snapshot(vault: &Vault) -> VaultSnapshot {
     VaultSnapshot {
         interned: vault
@@ -526,6 +560,43 @@ mod tests {
         }
     }
 
+    /// A clean scanner that returns the exact input borrow.
+    struct BorrowedPass;
+    impl Scanner for BorrowedPass {
+        fn id(&self) -> ScannerId {
+            ScannerId("test:borrowed-pass")
+        }
+        fn direction(&self) -> Direction {
+            Direction::Input
+        }
+        fn disposition(&self) -> Disposition {
+            Disposition::Transform
+        }
+        fn scan<'a>(&self, text: &'a str, _ctx: &mut ScanCtx) -> ScanResult<'a> {
+            Ok(Verdict::transformed(Cow::Borrowed(text)))
+        }
+    }
+
+    /// Models an existing custom output scanner that reads the original prompt.
+    struct PromptReader;
+    impl Scanner for PromptReader {
+        fn id(&self) -> ScannerId {
+            ScannerId("test:prompt-reader")
+        }
+        fn direction(&self) -> Direction {
+            Direction::Output
+        }
+        fn disposition(&self) -> Disposition {
+            Disposition::Transform
+        }
+        fn scan<'a>(&self, text: &'a str, ctx: &mut ScanCtx) -> ScanResult<'a> {
+            Ok(match ctx.prompt.as_deref() {
+                Some(prompt) => Verdict::transformed(Cow::Owned(prompt.to_owned())),
+                None => Verdict::transformed(Cow::Borrowed(text)),
+            })
+        }
+    }
+
     /// A block scanner that rejects any text containing "bad".
     struct BlockBad;
     impl Scanner for BlockBad {
@@ -568,6 +639,77 @@ mod tests {
         let mut stack = ScannerStack::new(vec![Box::new(BlockBad), Box::new(Upper)], true);
         assert_eq!(stack.run_input("all good").unwrap(), "ALL GOOD");
         assert!(stack.report().aggregate_risk().abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn clean_stack_preserves_text_and_vault_without_output_readers() {
+        let mut vault = Vault::deterministic(b"test-key");
+        let sentinel = vault.intern("EMAIL", "kept@example.com", true);
+        let mut stack = ScannerStack::with_ctx(
+            vec![Box::new(BorrowedPass)],
+            true,
+            ScanCtx::new().with_vault(vault),
+        );
+
+        assert_eq!(
+            stack.run_input("unchanged request").unwrap(),
+            "unchanged request"
+        );
+        assert_eq!(stack.ctx().vault.len(), 1);
+        assert_eq!(
+            stack.ctx().vault.original_for(&sentinel),
+            Some("kept@example.com")
+        );
+        assert!(stack.ctx().prompt.is_none());
+    }
+
+    #[test]
+    fn built_in_restore_scanner_does_not_retain_the_prompt() {
+        let mut stack = ScannerStack::new(
+            vec![
+                Box::new(BorrowedPass),
+                Box::new(crate::scanners::RestoreScanner::for_pii()),
+            ],
+            true,
+        );
+
+        assert_eq!(
+            stack.run_input("unchanged request").unwrap(),
+            "unchanged request"
+        );
+        assert!(stack.ctx().prompt.is_none());
+        assert_eq!(
+            stack.run_output("model response").unwrap(),
+            "model response"
+        );
+    }
+
+    #[test]
+    fn output_scanner_can_still_read_the_original_prompt() {
+        let prompt = "contact alice@example.com";
+        let mut stack = ScannerStack::new(
+            vec![
+                Box::new(crate::scanners::PiiScanner::new()),
+                Box::new(PromptReader),
+            ],
+            true,
+        );
+
+        let redacted = stack.run_input(prompt).unwrap();
+        assert!(redacted.contains("[REDACTED_EMAIL_1_"));
+        assert!(!redacted.contains(prompt));
+        assert_eq!(stack.ctx().prompt.as_deref(), Some(prompt));
+        assert_eq!(stack.run_output("model response").unwrap(), prompt);
+    }
+
+    #[test]
+    fn replacement_skips_the_same_borrow_and_preserves_a_borrowed_slice() {
+        let current = String::from("unchanged request");
+        assert!(replacement_if_changed(&current, Cow::Borrowed(&current)).is_none());
+        assert_eq!(
+            replacement_if_changed(&current, Cow::Borrowed(&current[10..])).as_deref(),
+            Some("request")
+        );
     }
 
     /// A scanner that interns its whole input as an EMAIL, so a test can observe

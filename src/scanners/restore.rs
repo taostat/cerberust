@@ -89,6 +89,10 @@ impl Scanner for RestoreScanner {
         Disposition::Transform
     }
 
+    fn needs_prompt(&self) -> bool {
+        false
+    }
+
     fn scan<'a>(&self, text: &'a str, ctx: &mut ScanCtx) -> ScanResult<'a> {
         let pairs: Vec<(String, String)> = ctx
             .vault
