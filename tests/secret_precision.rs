@@ -261,6 +261,9 @@ fn ethereum_private_keys_require_named_assignments() {
             format!("secret=0x{key}"),
             format!("api_key=0x{key}"),
             format!("0x{key}"),
+            format!(r#"{{"privateKey":"{key}"}}"#),
+            format!(r#"{{"privateKey":"0x{key}"}}"#),
+            format!(r#"{{"privateKey":"0x{}"}}"#, key.to_ascii_uppercase()),
         ] {
             assert_no_new_crypto_type(&text);
             assert!(
@@ -538,6 +541,9 @@ fn unquoted_literals_keep_punctuation_and_do_not_use_broad_placeholder_exemption
         "abc[def]123",
         "example_9x7k2m",
         "private9_token",
+        "token=changeme",
+        "secret=private9x7",
+        "password=config.password",
     ] {
         assert_redacted(&format!("password={value}"), value, "SECRET");
     }
@@ -561,6 +567,33 @@ fn typed_assignments_redact_the_literal_value() {
             .iter()
             .any(|s| s.start == start && s.end == start + 7));
     }
+}
+
+#[test]
+fn typed_chained_assignments_redact_the_literal_value() {
+    for assignment in [
+        "password = 'private9x7'",
+        "password=\"private9x7\"",
+        "api_key = private9x7",
+        "password = token = 'private9x7'",
+    ] {
+        let text = format!("let token: string = {assignment};");
+        let spans = detect_secrets(&text);
+        assert_eq!(spans.len(), 1, "{text}: {spans:?}");
+        assert_eq!(&text[spans[0].start..spans[0].end], "private9x7");
+        assert_redacted(&text, "private9x7", "SECRET");
+    }
+}
+
+#[test]
+fn deeply_chained_assignments_preserve_literal_detection() {
+    let text = format!(
+        "let token: string = {}'private9x7'",
+        "password=".repeat(16_384)
+    );
+    let spans = detect_secrets(&text);
+    assert_eq!(spans.len(), 1);
+    assert_eq!(&text[spans[0].start..spans[0].end], "private9x7");
 }
 
 #[test]

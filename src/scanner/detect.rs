@@ -810,9 +810,16 @@ fn labelled_secret_rule(typed: bool) -> &'static Regex {
     re.get_or_init(|| structured_rule(&credential_pattern(typed)))
 }
 
-fn credential_head_rule() -> &'static Regex {
+fn credential_head_rule(anchored: bool) -> &'static Regex {
     static RE: OnceLock<Regex> = OnceLock::new();
-    RE.get_or_init(|| structured_rule(&format!("{CREDENTIAL_LABEL}{CREDENTIAL_ASSIGNMENT}")))
+    static ANCHORED: OnceLock<Regex> = OnceLock::new();
+    let re = if anchored { &ANCHORED } else { &RE };
+    re.get_or_init(|| {
+        let anchor = if anchored { r"\A" } else { "" };
+        structured_rule(&format!(
+            "{anchor}{CREDENTIAL_LABEL}{CREDENTIAL_ASSIGNMENT}"
+        ))
+    })
 }
 
 fn typed_credential_head_rule() -> &'static Regex {
@@ -871,12 +878,31 @@ pub(crate) fn expression_match_start(buf: &[u8], split: usize) -> Option<usize> 
 fn labelled_expression_bounds(text: &str) -> Vec<(usize, usize, bool)> {
     let mut syntax = None;
     let mut cursor = 0;
+    let mut chained = None;
+    let mut chain_start = None;
     let mut bounds = Vec::new();
-    while let Some(head) = credential_head_rule().find_at(text, cursor) {
+    while let Some(head) = credential_head_rule(false).find_at(text, cursor) {
+        if chained != Some(head.start()) {
+            chain_start = None;
+        }
         let index = syntax.get_or_insert_with(|| AssignmentSyntax::new(text));
-        let Some(caps) =
-            labelled_secret_rule(index.is_typed(head.start())).captures_at(text, head.start())
+        let typed_end = index.typed_head_end(head.start());
+        let value_start = typed_end.unwrap_or(head.end());
+        if (typed_end.is_some() || chained == Some(head.start()))
+            && credential_head_rule(true).is_match(&text[value_start..])
+        {
+            chain_start.get_or_insert(head.start());
+            cursor = value_start;
+            chained = Some(cursor);
+            continue;
+        }
+        chained = None;
+        let start = chain_start.take().unwrap_or(head.start());
+        let Some(caps) = labelled_secret_rule(typed_end.is_some()).captures_at(text, head.start())
         else {
+            if start < head.start() && head.end() == text.len() {
+                bounds.push((start, text.len(), true));
+            }
             break;
         };
         let Some(matched) = caps.get(0) else {
@@ -891,6 +917,7 @@ fn labelled_expression_bounds(text: &str) -> Vec<(usize, usize, bool)> {
             .name("bare")
             .filter(|v| v.as_str().ends_with(['(', '[', '<']))
         else {
+            bounds.push((start, matched.end(), false));
             continue;
         };
         let limit = index.boundary(value.start(), text.len());
@@ -900,7 +927,7 @@ fn labelled_expression_bounds(text: &str) -> Vec<(usize, usize, bool)> {
             .map_or((limit, limit == text.len()), |(_, consumed)| {
                 (value.start() + consumed, false)
             });
-        bounds.push((head.start(), end, unfinished));
+        bounds.push((start, end, unfinished));
         cursor = end;
     }
     bounds
@@ -992,7 +1019,9 @@ fn valid_bittensor_private_key(value: &str) -> bool {
         .strip_prefix("0x")
         .or_else(|| value.strip_prefix("0X"))
         .unwrap_or(value);
-    matches!(hex.len(), 64 | 128) && hex.bytes().all(|byte| byte.is_ascii_hexdigit())
+    matches!(hex.len(), 64 | 128)
+        && hex.bytes().all(|byte| byte.is_ascii_hexdigit())
+        && !is_public_hardhat_dev_key(value)
 }
 
 fn is_private_phrase_value(value: &str) -> bool {
@@ -1158,10 +1187,21 @@ fn detect_labelled_secrets(text: &str, spans: &mut Vec<Span>) {
     let mut syntax = None;
     let mut arguments = Vec::new();
     let mut cursor = 0;
-    while let Some(head) = credential_head_rule().find_at(text, cursor) {
+    let mut chained = None;
+    while let Some(head) = credential_head_rule(false).find_at(text, cursor) {
         let index = syntax.get_or_insert_with(|| AssignmentSyntax::new(text));
-        let typed = index.is_typed(head.start());
-        let Some(caps) = labelled_secret_rule(typed).captures_at(text, head.start()) else {
+        let typed_end = index.typed_head_end(head.start());
+        let value_start = typed_end.unwrap_or(head.end());
+        if (typed_end.is_some() || chained == Some(head.start()))
+            && credential_head_rule(true).is_match(&text[value_start..])
+        {
+            cursor = value_start;
+            chained = Some(cursor);
+            continue;
+        }
+        chained = None;
+        let Some(caps) = labelled_secret_rule(typed_end.is_some()).captures_at(text, head.start())
+        else {
             break;
         };
         if let Some(matched) = caps
@@ -1241,7 +1281,7 @@ struct AssignmentSyntax {
     next_boundary: usize,
     // Find typed assignments once, without retrying the type look-ahead at
     // every nested label in an annotation that has no assignment.
-    typed_starts: Vec<usize>,
+    typed_heads: Vec<(usize, usize)>,
     next_typed: usize,
 }
 
@@ -1257,23 +1297,26 @@ impl AssignmentSyntax {
                 .collect(),
             generic_closes: generic_closes(text),
             next_boundary: 0,
-            typed_starts: typed_credential_head_rule()
+            typed_heads: typed_credential_head_rule()
                 .find_iter(text)
-                .map(|head| head.start())
+                .map(|head| (head.start(), head.end()))
                 .collect(),
             next_typed: 0,
         }
     }
 
-    fn is_typed(&mut self, start: usize) -> bool {
+    fn typed_head_end(&mut self, start: usize) -> Option<usize> {
         while self
-            .typed_starts
+            .typed_heads
             .get(self.next_typed)
-            .is_some_and(|&offset| offset < start)
+            .is_some_and(|&(offset, _)| offset < start)
         {
             self.next_typed += 1;
         }
-        self.typed_starts.get(self.next_typed) == Some(&start)
+        self.typed_heads
+            .get(self.next_typed)
+            .filter(|&&(offset, _)| offset == start)
+            .map(|&(_, end)| end)
     }
 
     fn boundary(&mut self, start: usize, fallback: usize) -> usize {

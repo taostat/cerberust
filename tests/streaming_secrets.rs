@@ -302,6 +302,46 @@ fn labelled_literals_and_defaults_never_leak_across_chunks() {
 }
 
 #[test]
+fn typed_chained_assignments_remain_redacted_across_chunks() {
+    let secret = "private-default-9x7k2m";
+    for assignment in [
+        format!("password = '{secret}'"),
+        format!("password=\"{secret}\""),
+        format!("api_key = {secret}"),
+        format!("password = token = '{secret}'"),
+        format!("password =password = '{secret}'"),
+        format!("password= password= token = '{secret}'"),
+        format!("password\n=\npassword\n=\nsecret = '{secret}'"),
+    ] {
+        let text = format!("let token: string = {assignment};\n");
+        let expected = normalize(&stack().run_output(&text).unwrap());
+        assert!(expected.contains("[REDACTED_SECRET_"));
+        assert!(!expected.contains(secret));
+        for chunk_len in 1..=8 {
+            assert_eq!(normalize(&stream(&text, chunk_len, secret)), expected);
+        }
+        let mut scanners = stack();
+        let mut runner = StreamOutput::new(&scanners);
+        let emitted = runner
+            .push(&mut scanners, &format!("{text}finished!\n"))
+            .unwrap();
+        assert!(emitted.contains("[REDACTED_SECRET_"));
+        assert!(!emitted.contains(secret));
+    }
+}
+
+#[test]
+fn invalid_chained_values_do_not_hold_following_text() {
+    let text = "let token: string = password = & invalid!\nfinished!\n";
+    let mut scanners = stack();
+    let mut runner = StreamOutput::new(&scanners);
+    let mut emitted = runner.push(&mut scanners, text).unwrap();
+    assert!(emitted.starts_with("let token: string = password = & invalid!\n"));
+    emitted.push_str(&runner.finish(&mut scanners).unwrap());
+    assert_eq!(emitted, text);
+}
+
+#[test]
 fn spaced_code_expressions_remain_intact_across_chunks() {
     for text in [
         "token = tokenizer(text, add_special_tokens=False)\n",
