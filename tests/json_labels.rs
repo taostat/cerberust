@@ -454,11 +454,65 @@ fn json_exemptions_preserve_distinct_credential_literals() {
         ("password", "%Db_Password%-suffix"),
         ("password", "ab#cd#12"),
         ("starting_access_token", "mysecretvalue"),
+        ("api_key", "YOUR_API_KEY_HERE9x7"),
+        ("api_key", "mysecretvalue_here"),
+        ("api_key", "replace_with_mysecretvalue"),
+        ("password", "Array<string>9x7"),
+        ("password", "System.String9x7"),
+        ("password", "$env:DB_PASSWORD-suffix"),
     ] {
         let source = format!(r#"{{"{key}":"{value}"}}"#);
         assert_eq!(secret_values(&source), [value], "{source}");
         let mut stack = output_stack();
         let output = stack.run_output(&source).unwrap();
         assert_complete_redactions(&stack, &source, &output, &[value]);
+    }
+}
+
+#[test]
+fn json_escaped_quotes_do_not_end_description_values() {
+    for source in [
+        r#"{"password":"Account\" password"}"#,
+        r#"{"password":"Account\"\npassword"}"#,
+        r#"{"password":"Account\" password","api_key":"placeholder"}"#,
+        r#"前 {"password":"Account\" password"} 後"#,
+    ] {
+        assert_unchanged_json(source);
+    }
+}
+
+#[test]
+fn json_config_template_placeholders_are_not_credentials() {
+    for value in [
+        "YOUR_API_KEY_HERE",
+        "your-password-here",
+        "INSERT_TOKEN_HERE",
+        "REPLACE_WITH_YOUR_SECRET",
+    ] {
+        assert_unchanged_json(&format!(r#"{{"api_key":"{value}"}}"#));
+    }
+}
+
+#[test]
+fn json_array_and_qualified_string_types_are_not_credentials() {
+    for value in [
+        "Array<string>",
+        "[]byte",
+        "System.String",
+        "pydantic.types.SecretStr",
+    ] {
+        assert_unchanged_json(&format!(r#"{{"password":"{value}"}}"#));
+    }
+}
+
+#[test]
+fn json_powershell_environment_references_are_not_credentials() {
+    for value in [
+        "$env:DB_PASSWORD",
+        "$Env:DB_PASSWORD",
+        "$ENV:Db_Password",
+        "${env:DB_PASSWORD}",
+    ] {
+        assert_unchanged_json(&format!(r#"{{"password":"{value}"}}"#));
     }
 }

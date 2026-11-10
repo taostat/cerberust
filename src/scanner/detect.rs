@@ -736,7 +736,7 @@ const URL_CREDENTIAL_PATTERN: &str = r"[a-z][a-z0-9+.\-]*://[^\s:/@]+:([^\s/@]+)
 const JSON_CREDENTIAL_PATTERN: &str = concat!(
     r#""(?P<key>[A-Za-z0-9_.-]{0,40}?"#,
     r"(?i:password|passwd|pwd|secret|api[_-]?key|apikey|access[_-]?key|token))",
-    r#""[ \t\r\n]*:[ \t\r\n]*"(?P<value>(?:\\\S|[^"\\\s])*\\?)(?:"|$)"#,
+    r#""[ \t\r\n]*:[ \t\r\n]*"(?P<value>(?:\\\S|[^"\\\s])*(?:\\$)?)(?:"|$)"#,
 );
 
 fn credential_pattern(typed: bool) -> String {
@@ -1163,6 +1163,10 @@ fn is_json_type_hint(value: &str) -> bool {
                         | "secretstr"
                         | "std"
                         | "pydantic"
+                        | "array"
+                        | "byte"
+                        | "system"
+                        | "types"
                 )
         })
 }
@@ -1173,7 +1177,7 @@ fn is_json_reference(value: &str) -> bool {
         || RE
             .get_or_init(|| {
                 structured_rule(concat!(
-                    r"^(?:(?:process\.env\.|env:)[A-Za-z_][A-Za-z0-9_]*",
+                    r"^(?:(?:process\.env\.|\$?(?i:env):)[A-Za-z_][A-Za-z0-9_]*",
                     r"|%[A-Za-z_][A-Za-z0-9_]*%",
                     r"|#/[^\s]+)$"
                 ))
@@ -1230,7 +1234,17 @@ fn is_json_placeholder_value(value: &str) -> bool {
         "密码",
     ];
     let lower = value.to_lowercase();
-    if WORDS.contains(&lower.trim_end_matches([':', '*'])) {
+    let template = lower
+        .strip_suffix("_here")
+        .or_else(|| lower.strip_suffix("-here"))
+        .unwrap_or(&lower);
+    let template = template
+        .strip_prefix("replace_with_")
+        .or_else(|| template.strip_prefix("replace-with-"))
+        .unwrap_or(template);
+    if WORDS.contains(&lower.trim_end_matches([':', '*']))
+        || template.len() != lower.len() && is_non_secret_assignment_value(template, true, false)
+    {
         return true;
     }
     if ["***", "•••", "...", "…", "xxxx", "XXXX", "###"]
