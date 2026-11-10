@@ -699,3 +699,22 @@ fn overlapping_assignment_labels_remain_redacted_across_chunks() {
         }
     }
 }
+
+#[test]
+fn template_values_preserve_following_streamed_assignments() {
+    let secret = "private default 9x7k2m";
+    for template in ["{{ ENV }}", "{{ENV}}", "{{\tENV\t}}"] {
+        for separator in ["", ";", "f("] {
+            for quote in ['\'', '"'] {
+                let text = format!(
+                    "token={template}{separator}password={quote}{secret}{quote}\nfinished!\n"
+                );
+                let expected = normalize(&stack().run_output(&text).unwrap());
+                assert!(!expected.contains(secret));
+                for chunk_len in 1..=8 {
+                    assert_eq!(normalize(&stream(&text, chunk_len, secret)), expected);
+                }
+            }
+        }
+    }
+}

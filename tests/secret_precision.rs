@@ -743,6 +743,20 @@ fn overlapping_assignment_labels_preserve_literal_detection() {
 }
 
 #[test]
+fn template_values_preserve_following_literal_assignments() {
+    let secret = "private-default-9x7k2m";
+    for template in ["{{ ENV }}", "{{ENV}}", "{{\tENV\t}}"] {
+        for separator in ["", ";", "f("] {
+            for quote in ['\'', '"'] {
+                let text = format!("token={template}{separator}password={quote}{secret}{quote}");
+                assert_type(&text, secret, "SECRET");
+                assert_redacted(&text, secret, "SECRET");
+            }
+        }
+    }
+}
+
+#[test]
 fn exempt_calls_do_not_hide_nested_secret_assignments() {
     for text in [
         "token=issue(secret=hunter2)",

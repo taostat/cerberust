@@ -917,7 +917,11 @@ fn labelled_expression_bounds(text: &str) -> Vec<(usize, usize, bool)> {
             .name("double")
             .or_else(|| caps.name("single"))
             .map(|value| (value, true))
-            .or_else(|| caps.name("bare").map(|value| (value, false)))
+            .or_else(|| {
+                caps.name("bare")
+                    .or_else(|| caps.name("template"))
+                    .map(|value| (value, false))
+            })
             .map_or(matched.end(), |(value, quoted)| {
                 value.start() + credential_value_resume(value.as_str(), quoted)
             });
@@ -1272,11 +1276,7 @@ fn detect_labelled_secrets(text: &str, spans: &mut Vec<Span>) {
         {
             spans.push(Span::new(start, start + value.len(), "SECRET", 0.9));
         }
-        cursor = if template.is_some() {
-            end
-        } else {
-            start + credential_value_resume(candidate, quoted.is_some())
-        };
+        cursor = start + credential_value_resume(candidate, quoted.is_some());
     }
 }
 
