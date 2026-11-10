@@ -730,6 +730,13 @@ const CREDENTIAL_VALUE: &str = concat!(
     r#"|(?P<bare>[a-z_][a-z0-9_.:]*[ \t]*[\[(<]|[^\s"'&]+))"#,
 );
 const URL_CREDENTIAL_PATTERN: &str = r"[a-z][a-z0-9+.\-]*://[^\s:/@]+:([^\s/@]+)@";
+/// A double-quoted object key that ends in a credential label, followed by a
+/// double-quoted string value: `"password": "..."`, `"db_password":"..."`.
+const JSON_CREDENTIAL_PATTERN: &str = concat!(
+    r#""(?P<key>[A-Za-z0-9_.-]{0,40}?"#,
+    r"(?i:password|passwd|pwd|secret|api[_-]?key|apikey|access[_-]?key|token))",
+    r#""[ \t]*:[ \t]*"(?P<value>(?:\\[^\r\n]|[^"\\\r\n])*)""#,
+);
 
 fn credential_pattern(typed: bool) -> String {
     let assignment = if typed {
@@ -766,6 +773,7 @@ pub fn secret_pattern_sources() -> Vec<String> {
         .chain([
             credential_pattern(true).replace(r"\b", ""),
             URL_CREDENTIAL_PATTERN.to_owned(),
+            JSON_CREDENTIAL_PATTERN.to_owned(),
         ])
         .chain(gitleaks::pattern_sources())
         .collect()
@@ -1034,6 +1042,7 @@ pub fn detect_secrets(text: &str) -> Vec<Span> {
     }
     detect_validated_secrets(text, &validated_hits, &mut spans);
     detect_labelled_secrets(text, &mut spans);
+    detect_json_labelled_secrets(text, &mut spans);
     for caps in url_credential_rule().captures_iter(text) {
         if let Some(v) = caps.get(1) {
             spans.push(Span::new(v.start(), v.end(), "SECRET", 0.9));
@@ -1041,6 +1050,94 @@ pub fn detect_secrets(text: &str) -> Vec<Span> {
     }
     spans.extend(entropy_backstop(text));
     spans
+}
+
+fn json_credential_rule() -> &'static Regex {
+    static RE: OnceLock<Regex> = OnceLock::new();
+    RE.get_or_init(|| structured_rule(JSON_CREDENTIAL_PATTERN))
+}
+
+/// Quoted JSON keys naming a credential, with a quoted string value. Only
+/// single-token values that do not look like a placeholder, a schema or type
+/// word, a masked value or a reference are reported.
+fn detect_json_labelled_secrets(text: &str, spans: &mut Vec<Span>) {
+    for caps in json_credential_rule().captures_iter(text) {
+        let (Some(key), Some(value)) = (caps.name("key"), caps.name("value")) else {
+            continue;
+        };
+        if is_json_credential(key.as_str(), value.as_str()) {
+            spans.push(Span::new(value.start(), value.end(), "SECRET", 0.9));
+        }
+    }
+}
+
+fn is_json_credential(key: &str, value: &str) -> bool {
+    let key = key.to_ascii_lowercase();
+    if key == "pwd" || is_pagination_token_key(&key) {
+        return false;
+    }
+    value.len() >= 6
+        && !value.contains(char::is_whitespace)
+        && !is_non_secret_assignment_value(value, true, false)
+        && !is_public_hardhat_dev_key(value)
+        && !is_json_placeholder_value(value)
+}
+
+/// `next_token`, `nextPageToken`, `continuation_token`: opaque paging cursors.
+fn is_pagination_token_key(key: &str) -> bool {
+    const CURSORS: [&str; 6] = [
+        "next",
+        "page",
+        "pagination",
+        "continuation",
+        "sync",
+        "cursor",
+    ];
+    let Some(prefix) = key.strip_suffix("token") else {
+        return false;
+    };
+    let prefix = prefix.trim_end_matches(['_', '-', '.']);
+    CURSORS.iter().any(|cursor| prefix.ends_with(cursor))
+}
+
+/// Schema and type words, masked values and bracketed placeholders.
+fn is_json_placeholder_value(value: &str) -> bool {
+    const WORDS: [&str; 16] = [
+        "string",
+        "secret",
+        "bearer",
+        "password",
+        "required",
+        "optional",
+        "hidden",
+        "redacted",
+        "sensitive",
+        "masked",
+        "boolean",
+        "integer",
+        "number",
+        "object",
+        "secretstr",
+        "undefined",
+    ];
+    let lower = value.to_ascii_lowercase();
+    if WORDS.contains(&lower.as_str()) {
+        return true;
+    }
+    if value
+        .chars()
+        .all(|ch| matches!(ch, '*' | '\u{2022}' | 'x' | 'X' | '.' | '#' | '-'))
+    {
+        return true;
+    }
+    let bytes = value.as_bytes();
+    matches!(
+        (bytes.first(), bytes.last()),
+        (Some(b'<'), Some(b'>'))
+            | (Some(b'['), Some(b']'))
+            | (Some(b'{'), Some(b'}'))
+            | (Some(b'('), Some(b')'))
+    )
 }
 
 /// Each validated rule's keywords, in rule order, for the shared keyword pass
