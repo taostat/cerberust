@@ -3,6 +3,8 @@
 //! redactions on the output path; and the pattern scanners
 //! ([`regex::RegexScanner`], [`ban_substrings::BanSubstringsScanner`],
 //! [`ban_topics::BanTopicsScanner`], [`token_limit::TokenLimitScanner`]).
+//! [`invisible_text::InvisibleTextScanner`] removes selected invisible Unicode
+//! characters from input while preserving complete subdivision flag emoji.
 //!
 //! The detect-and-redact scanners (PII, secrets, regex, redacting ban-substrings)
 //! share one machinery (collect spans → resolve overlaps → intern into the vault
@@ -19,6 +21,7 @@
 
 pub mod ban_substrings;
 pub mod ban_topics;
+pub mod invisible_text;
 pub mod pii;
 #[cfg(feature = "prompt-injection")]
 pub mod prompt_injection;
@@ -30,6 +33,7 @@ pub mod token_limit;
 
 pub use ban_substrings::BanSubstringsScanner;
 pub use ban_topics::{BanTopicsScanner, Topic};
+pub use invisible_text::InvisibleTextScanner;
 pub use pii::PiiScanner;
 #[cfg(feature = "prompt-injection")]
 pub use prompt_injection::{LoadError as PromptInjectionLoadError, PromptInjectionScanner};

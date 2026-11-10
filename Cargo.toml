@@ -1,6 +1,6 @@
 [package]
 name = "cerberust"
-version = "0.2.2"
+version = "0.3.0"
 edition = "2021"
 rust-version = "1.88"
 description = "Fast Rust guardrails for LLM input/output — composable scanners (PII, secrets, prompt-injection) and streaming middleware."
@@ -35,7 +35,8 @@ regex-automata = "0.4"
 # only when one of its keywords occurs in the text (gitleaks' own prefilter).
 # One case-insensitive Aho-Corasick pass over ~200 keywords picks the candidate
 # rules instead of running every regex. `aho-corasick` is already in the tree as
-# a `regex` dependency, so this adds no new crate.
+# a `regex` dependency, so this adds no new crate. Substring bans also reuse it
+# for linear-time ASCII-case-insensitive matching without copying the input.
 aho-corasick = "1"
 zeroize = { version = "1.8", features = ["derive"] }
 rand = "0.8"
@@ -50,6 +51,12 @@ hex = "0.4"
 # dependency.
 hmac = "0.12"
 sha2 = "0.10"
+# SS58 public-address exemptions need the chain's Blake2b-512 checksum. The
+# RustCrypto `blake2` crate is small, maintained with the same `digest` API as
+# `sha2`, and adds no platform dependency.
+blake2 = "0.10"
+# Decode candidate public Base58 identifiers before validating their checksums.
+bs58 = { version = "0.5", default-features = false, features = ["alloc"] }
 
 # The WASM guard runner (feature `wasm`). `wasmtime` is the reference
 # WebAssembly Component Model runtime; it loads a user-submitted guard component
@@ -80,7 +87,9 @@ anyhow = { version = "1.0", optional = true }
 # crate, loading the model's `tokenizer.json` (a DeBERTa-v3 SentencePiece
 # tokenizer); `onig` is its default regexer. Both are large trees, hence the
 # off-by-default feature — the core scanner library never links them.
-ort = { version = "2.0.0-rc.12", default-features = false, features = [
+# This feature uses the rc.12 Session API; keep Cargo from floating to a later
+# prerelease with a breaking API change.
+ort = { version = "=2.0.0-rc.12", default-features = false, features = [
     "std",
     "download-binaries",
     "tls-native",

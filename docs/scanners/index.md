@@ -4,6 +4,13 @@ Each scanner is a small, composable guard you stack in front of your model. Ever
 page starts with **what it protects you from** in plain language, then works up to
 configuration and performance.
 
+## Input sanitizers
+
+These narrowly remove selected characters before a prompt reaches a model.
+
+- **[InvisibleTextScanner](invisible-text.md)** — invisible tag payloads and bidi
+  embedding/override/isolate controls. *Redact by default or block; input only.*
+
 ## Redaction scanners
 
 These detect sensitive data and replace it with a placeholder — round-trip (restored
@@ -53,6 +60,7 @@ All scanners are opt-in (add them to a stack); the last column is the **cargo fe
 | [SecretScanner](secrets.md) | leaking/echoing secrets | input (or output) | redact (one-way) | default |
 | [RegexScanner](regex.md) | leaking your own formats | input/output/both | redact (configurable) | default |
 | [RestoreScanner](restore.md) | — (completes the round-trip) | output | restore | default |
+| [InvisibleTextScanner](invisible-text.md) | hidden tags/bidi | input | redact/block | default |
 | [BanSubstringsScanner](ban-substrings.md) | forbidden phrases | input/output | block or redact | default |
 | [BanTopicsScanner](ban-topics.md) | off-limits subjects | input/output | block | default |
 | [TokenLimitScanner](token-limit.md) | oversized prompts | input | block | default |

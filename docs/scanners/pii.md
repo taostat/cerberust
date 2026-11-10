@@ -51,7 +51,9 @@ checksum** so it doesn't over-match:
 
 - **Email** — a standard address pattern.
 - **Phone** — international and US grouping with separators.
-- **US SSN** — `123-45-6789`.
+- **US SSN** — `123-45-6789`, only when the area is not 000, 666, or 900–999,
+  the group is not 00, and the serial is not 0000. These unassigned ranges follow
+  the [SSA SSN fact sheet](https://www.ssa.gov/kc/SSAFactSheet--IssuingSSNs.pdf).
 - **IP address** — dotted-quad, then validated so each octet is 0–255 (so
   `999.1.1.1` is rejected).
 - **Credit card** — 13–19 digits, optionally space/hyphen grouped, then gated by

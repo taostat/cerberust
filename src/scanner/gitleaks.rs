@@ -25,7 +25,7 @@ use regex_automata::meta;
 use regex_automata::util::captures::Captures;
 use regex_automata::Input;
 
-use super::detect::Span;
+use super::detect::{validated_secret_keywords, Span};
 use super::gitleaks_rules::{GLOBAL_REGEXES, GLOBAL_STOPWORDS, RULES};
 
 /// Confidence of a ported-rule span. Below the crate's hand-written vendor
@@ -88,9 +88,55 @@ struct Compiled {
     rules: Vec<CompiledRule>,
     /// Keyword automaton; pattern `i` is `keyword_rules[i]`'s keyword.
     keywords: Option<AhoCorasick>,
-    /// For each keyword pattern, the indices (into `rules`) that carry it.
-    keyword_rules: Vec<Vec<usize>>,
+    /// For each keyword pattern, the rules that carry it.
+    keyword_rules: Vec<Vec<KeywordRule>>,
     global_regexes: Vec<Regex>,
+}
+
+/// A keyword's owner. The crate's own validated secret rules share this
+/// module's keyword pass, so their gate costs no extra scan of the text.
+#[derive(Clone, Copy)]
+enum KeywordRule {
+    /// An index into `Compiled::rules`.
+    Gitleaks(usize),
+    /// An index into the validated secret rules in `detect`.
+    Validated(usize),
+}
+
+fn add_keyword(
+    keyword_list: &mut Vec<String>,
+    keyword_rules: &mut Vec<Vec<KeywordRule>>,
+    keyword: &str,
+    rule: KeywordRule,
+) {
+    if let Some(pos) = keyword_list.iter().position(|known| *known == keyword) {
+        keyword_rules[pos].push(rule);
+    } else {
+        keyword_list.push(keyword.to_owned());
+        keyword_rules.push(vec![rule]);
+    }
+}
+
+fn unicode_keyword_variants(keyword: &str) -> Vec<String> {
+    let mut variants = vec![String::new()];
+    for ch in keyword.chars() {
+        let folded = match ch {
+            's' | 'S' => Some('ſ'),
+            'k' | 'K' => Some('\u{212a}'),
+            _ => None,
+        };
+        let mut extra = Vec::new();
+        for variant in &mut variants {
+            if let Some(folded) = folded {
+                let mut alternate = variant.clone();
+                alternate.push(folded);
+                extra.push(alternate);
+            }
+            variant.push(ch);
+        }
+        variants.extend(extra);
+    }
+    variants
 }
 
 fn compile_all(patterns: &[&str]) -> Vec<Regex> {
@@ -101,8 +147,8 @@ fn compiled() -> &'static Compiled {
     static COMPILED: OnceLock<Compiled> = OnceLock::new();
     COMPILED.get_or_init(|| {
         let mut rules = Vec::with_capacity(RULES.len());
-        let mut keyword_list: Vec<&'static str> = Vec::new();
-        let mut keyword_rules: Vec<Vec<usize>> = Vec::new();
+        let mut keyword_list: Vec<String> = Vec::new();
+        let mut keyword_rules: Vec<Vec<KeywordRule>> = Vec::new();
         for rule in RULES {
             // Every generated regex compiles (the generator checks); a failure
             // here would drop that one rule rather than panic.
@@ -114,12 +160,12 @@ fn compiled() -> &'static Compiled {
                 .and_then(|hir| hir.properties().maximum_len());
             let index = rules.len();
             for kw in rule.keywords {
-                if let Some(pos) = keyword_list.iter().position(|k| *k == *kw) {
-                    keyword_rules[pos].push(index);
-                } else {
-                    keyword_list.push(*kw);
-                    keyword_rules.push(vec![index]);
-                }
+                add_keyword(
+                    &mut keyword_list,
+                    &mut keyword_rules,
+                    kw,
+                    KeywordRule::Gitleaks(index),
+                );
             }
             let allowlists = rule
                 .allowlists
@@ -137,6 +183,18 @@ fn compiled() -> &'static Compiled {
                 max_len,
                 allowlists,
             });
+        }
+        for (index, keywords) in validated_secret_keywords().enumerate() {
+            for kw in keywords {
+                for variant in unicode_keyword_variants(kw) {
+                    add_keyword(
+                        &mut keyword_list,
+                        &mut keyword_rules,
+                        &variant,
+                        KeywordRule::Validated(index),
+                    );
+                }
+            }
         }
         let keywords = AhoCorasickBuilder::new()
             .ascii_case_insensitive(true)
@@ -191,10 +249,15 @@ fn hold_back_source(regex: &str) -> String {
 /// only over windows around the keyword hits, each widened by the rule's
 /// longest possible match (the whole text when unbounded). Look-around at a
 /// window's edge still sees the surrounding bytes.
+///
+/// The same keyword pass sets `validated_hits[i]` when a keyword of the
+/// crate's validated secret rule `i` occurs. If the automaton is unavailable,
+/// every validated rule is marked so that none is skipped.
 #[must_use]
-pub(crate) fn detect(text: &str) -> Vec<Span> {
+pub(crate) fn detect(text: &str, validated_hits: &mut [bool]) -> Vec<Span> {
     let c = compiled();
     let Some(keywords) = &c.keywords else {
+        validated_hits.fill(true);
         return Vec::new();
     };
     // Per rule: keyword hit spans, or `None` if the rule does not run.
@@ -204,10 +267,17 @@ pub(crate) fn detect(text: &str) -> Vec<Span> {
         .map(|r| (!r.rule.gated).then(Vec::new))
         .collect();
     for m in keywords.find_overlapping_iter(text) {
-        for &i in &c.keyword_rules[m.pattern().as_usize()] {
-            hits[i]
-                .get_or_insert_with(Vec::new)
-                .push((m.start(), m.end()));
+        for &rule in &c.keyword_rules[m.pattern().as_usize()] {
+            match rule {
+                KeywordRule::Gitleaks(i) => hits[i]
+                    .get_or_insert_with(Vec::new)
+                    .push((m.start(), m.end())),
+                KeywordRule::Validated(i) => {
+                    if let Some(hit) = validated_hits.get_mut(i) {
+                        *hit = true;
+                    }
+                }
+            }
         }
     }
     let mut spans = Vec::new();
@@ -291,10 +361,13 @@ fn secret_match(group: usize, caps: &Captures) -> Option<(usize, usize)> {
 }
 
 fn contains_stopword(secret: &str, stopwords: &[&str]) -> bool {
-    let lower = secret.to_ascii_lowercase();
-    stopwords
-        .iter()
-        .any(|w| lower.contains(&w.to_ascii_lowercase()))
+    stopwords.iter().any(|word| {
+        word.is_empty()
+            || secret
+                .as_bytes()
+                .windows(word.len())
+                .any(|candidate| candidate.eq_ignore_ascii_case(word.as_bytes()))
+    })
 }
 
 fn globally_allowed(c: &Compiled, secret: &str) -> bool {
@@ -350,6 +423,35 @@ mod tests {
     )]
     use super::super::gitleaks_rules::EXCLUDED;
     use super::*;
+
+    fn detect(text: &str) -> Vec<Span> {
+        super::detect(text, &mut [])
+    }
+
+    fn validated_hits(text: &str) -> Vec<bool> {
+        let mut hits = vec![false; validated_secret_keywords().count()];
+        let _ = super::detect(text, &mut hits);
+        hits
+    }
+
+    #[test]
+    fn shared_keyword_pass_marks_only_validated_rules_with_a_keyword_hit() {
+        let keywords: Vec<_> = validated_secret_keywords().collect();
+        assert!(validated_hits("").iter().all(|hit| !hit));
+        for (index, rule_keywords) in keywords.iter().enumerate() {
+            for keyword in *rule_keywords {
+                let hits = validated_hits(&format!("x {} y", keyword.to_ascii_uppercase()));
+                assert!(hits[index], "keyword {keyword:?} did not mark rule {index}");
+            }
+        }
+        let ungated: Vec<bool> = validated_hits("seed privatekey solana")
+            .iter()
+            .zip(&keywords)
+            .filter(|(_, rule_keywords)| rule_keywords.is_empty())
+            .map(|(hit, _)| *hit)
+            .collect();
+        assert!(!ungated.is_empty() && ungated.iter().all(|hit| !hit));
+    }
 
     fn types(text: &str) -> Vec<String> {
         detect(text).into_iter().map(|s| s.ty).collect()
@@ -459,6 +561,14 @@ mod tests {
             "xxabcdefghijklmnopqrstuvwxyzxx",
             GLOBAL_STOPWORDS
         ));
+        assert!(contains_stopword(
+            "xxAbCdEfGhIjKlMnOpQrStUvWxYzxx",
+            GLOBAL_STOPWORDS
+        ));
+        assert!(!contains_stopword(
+            "xxＡBCDEFGHIJKLMNOPQRSTUVWXYZxx",
+            GLOBAL_STOPWORDS
+        ));
         let placeholder: String = "abcdefghijklmnopqrstuvwxyz0123456789"
             .chars()
             .cycle()
@@ -467,6 +577,28 @@ mod tests {
         assert!(!types(&format!("github_pat_{placeholder}"))
             .iter()
             .any(|t| t == "GITHUB_FINE_GRAINED_PAT"));
+    }
+
+    #[test]
+    fn stopwords_keep_ascii_only_folding_and_empty_word_semantics() {
+        for (secret, word, expected) in [
+            ("🦀 éfOO!", "éFoo", true),
+            ("🦀 ÉfOO!", "éFoo", false),
+            ("İBAR", "İbar", true),
+            ("İBAR", "ibar", false),
+            ("straße", "STRASSE", false),
+            ("\u{212a}ey", "key", false),
+            ("", "", true),
+            ("secret", "", true),
+            ("", "nonempty", false),
+        ] {
+            assert_eq!(
+                contains_stopword(secret, &[word]),
+                expected,
+                "{secret:?}, {word:?}"
+            );
+        }
+        assert!(!contains_stopword("secret", &[]));
     }
 
     #[test]
@@ -622,7 +754,7 @@ mod recall {
             let fired = if let Some(texts) = handwritten(rule.id, &mut runner) {
                 texts
                     .iter()
-                    .any(|t| detect(t).iter().any(|s| s.ty == rule.ty))
+                    .any(|t| detect(t, &mut []).iter().any(|s| s.ty == rule.ty))
             } else {
                 let Ok(strategy) = proptest::string::string_regex(&sampling_form(rule.regex))
                 else {
@@ -635,7 +767,7 @@ mod recall {
                 (0..40).any(|_| {
                     let sample = strategy.new_tree(&mut runner).unwrap().current();
                     let text = format!("{context}\n{sample} \n");
-                    detect(&text).iter().any(|s| s.ty == rule.ty)
+                    detect(&text, &mut []).iter().any(|s| s.ty == rule.ty)
                 })
             };
             if !fired {

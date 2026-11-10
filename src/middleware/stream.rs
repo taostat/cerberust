@@ -157,9 +157,18 @@ impl StreamOutput {
         // Whatever set the hold point, never flush part of a token: a scanner's
         // floor may fall inside one (a list word after a digit in a key).
         split = whitespace_floor(buf, split);
+        if split == 0 || split == buf.len() {
+            return split;
+        }
+        let output_matches = stack.output_matches(buf);
         // Nor part of a completed match: the unary scan must see it whole. Each
         // step moves the split strictly earlier, so this terminates.
-        while let Some(start) = hold.straddling_start(buf, split) {
+        while let Some(start) = hold
+            .straddling_start(buf, split)
+            .into_iter()
+            .chain(output_matches.straddling_start(split))
+            .min()
+        {
             split = whitespace_floor(buf, start);
         }
         split

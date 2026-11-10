@@ -1,0 +1,18 @@
+Local node examples:
+  //Alice
+  //Bob//stash
+  //Charlie
+  //Dave
+  //Eve
+  //Ferdie
+  bottom drive obey lake curtain smoke basket hold race lonely fit walk
+
+Ordinary seed settings:
+  seed = 1234
+  --seed 42
+  rng.seed(0x123456789abc)
+
+Documentation placeholders:
+  PRIVATE_KEY=0x...
+  private_key = "<your-private-key>"
+  PRIVATE_KEY=0xYOUR_KEY

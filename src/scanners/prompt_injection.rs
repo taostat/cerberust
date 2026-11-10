@@ -202,6 +202,10 @@ impl Scanner for PromptInjectionScanner {
         Disposition::Block
     }
 
+    fn needs_prompt(&self) -> bool {
+        false
+    }
+
     fn scan<'a>(&self, text: &'a str, _ctx: &mut ScanCtx) -> ScanResult<'a> {
         let risk = self.injection_probability(text)?;
         Ok(Verdict::detected(text, risk, self.threshold.get()))

@@ -133,6 +133,10 @@ impl Scanner for BanTopicsScanner {
         Disposition::Block
     }
 
+    fn needs_prompt(&self) -> bool {
+        false
+    }
+
     fn scan<'a>(&self, text: &'a str, _ctx: &mut ScanCtx) -> ScanResult<'a> {
         let risk = if self.matched_topic(text).is_some() {
             HIT_RISK

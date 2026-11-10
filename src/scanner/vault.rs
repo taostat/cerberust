@@ -1,5 +1,5 @@
-//! The request-scoped vault: a placeholder↔original map with a per-type
-//! counter and a per-value sentinel suffix, zeroized on drop.
+//! The request-scoped vault: a placeholder↔original map with per-type counts
+//! and a per-value sentinel suffix, zeroized on drop.
 //!
 //! The vault holds the one piece of request state that must never leave the
 //! host — the map from each `[REDACTED_<TYPE>_<N>_<suffix>]` sentinel back
@@ -107,9 +107,11 @@ pub struct Vault {
     restorable: std::collections::HashSet<String>,
     /// Next counter to allocate per entity type. Because a new distinct value
     /// bumps its type's counter and a deduped value does not, the final counter
-    /// per type is exactly the number of distinct values interned under it — the
-    /// content-free `by_entity_type` redaction tally.
+    /// per type is exactly the number of distinct values interned under it.
     counters: HashMap<String, u32>,
+    /// Content-free redaction tallies. Interned values add one; scanners that
+    /// redact characters without retaining them can record their count directly.
+    redacted: HashMap<String, u32>,
     /// Per-entity-type tally of restores performed against this vault, recorded
     /// by the restore pass via [`Vault::note_restored`]. Counts only — never the
     /// restored values — so it is safe to surface in a report.
@@ -161,6 +163,7 @@ impl Vault {
             by_value: HashMap::new(),
             restorable: std::collections::HashSet::new(),
             counters: HashMap::new(),
+            redacted: HashMap::new(),
             restored: HashMap::new(),
             suffix,
         }
@@ -208,8 +211,12 @@ impl Vault {
             return existing.clone();
         }
         let suffix = self.suffix.for_value(original);
-        let counter = self.counters.entry(ty.to_owned()).or_insert(0);
-        *counter += 1;
+        let counter = {
+            let counter = self.counters.entry(ty.to_owned()).or_insert(0);
+            *counter += 1;
+            *counter
+        };
+        self.note_redacted(ty, 1);
         let placeholder = format!("[REDACTED_{ty}_{counter}_{suffix}]");
         self.by_placeholder
             .insert(placeholder.clone(), original.to_owned());
@@ -252,6 +259,24 @@ impl Vault {
     /// redactions per type without ever touching plaintext.
     pub fn interned_counts(&self) -> impl Iterator<Item = (&str, u32)> {
         self.counters.iter().map(|(ty, n)| (ty.as_str(), *n))
+    }
+
+    /// Record a content-free redaction tally for transformations that do not
+    /// intern original text, such as removing invisible Unicode characters.
+    ///
+    /// The count and type label are the only data retained.
+    pub(crate) fn note_redacted(&mut self, ty: &str, n: u32) {
+        if n == 0 {
+            return;
+        }
+        let count = self.redacted.entry(ty.to_owned()).or_insert(0);
+        *count = count.saturating_add(n);
+    }
+
+    /// Iterate `(entity_type, count)` redaction tallies used by scan reports.
+    /// Values are counts only; no original or transformed content is stored.
+    pub(crate) fn redacted_counts(&self) -> impl Iterator<Item = (&str, u32)> {
+        self.redacted.iter().map(|(ty, n)| (ty.as_str(), *n))
     }
 
     /// Record that `n` sentinels of entity type `ty` were restored against this

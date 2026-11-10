@@ -81,6 +81,10 @@ cerberust = { version = "0.1", features = ["prompt-injection"] }
 
 - **The feature pulls a large tree** — ONNX Runtime (`ort`) and the Hugging Face
   tokenizer. That's why it's off by default; the core scanner library stays lean.
+- **ORT versions must align.** This feature pins `ort` to `=2.0.0-rc.12` because
+  later prereleases change its API. If another dependency requires a different
+  ORT prerelease, Cargo cannot resolve both: `ort-sys` also links the single native
+  `onnxruntime` library. Align dependencies on rc.12 or leave this feature disabled.
 - **The model isn't vendored.** The ~739 MB fp32 weights are downloaded separately
   (a `fetch-model.sh` script fetches `model.onnx` + `tokenizer.json` from Hugging
   Face into a directory you point the scanner at). Quantizing to a smaller int8

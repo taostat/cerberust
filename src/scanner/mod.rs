@@ -48,9 +48,8 @@ pub struct ScanCtx {
     /// The shared placeholder↔original map. Any scanner may intern into it on
     /// input; restore reads it on output.
     pub vault: Vault,
-    /// The original prompt, set once on the input path. Output scanners
-    /// that need it (relevance, factual-consistency, later additions) read it
-    /// here — this carries LLM Guard's output `scan(prompt, output)` second
+    /// The original prompt, refreshed on each input run when any scanner needs
+    /// it. This carries LLM Guard's output `scan(prompt, output)` second
     /// argument without widening the per-call signature.
     pub prompt: Option<String>,
     /// How a restored original is encoded before it is spliced back into the
@@ -110,6 +109,17 @@ pub trait Scanner: Send + Sync {
     /// Whether this scanner may block, or only transforms.
     fn disposition(&self) -> Disposition;
 
+    /// Whether this scanner needs the original input prompt in
+    /// [`ScanCtx::prompt`].
+    ///
+    /// The default is `true` to preserve existing custom scanners that read the
+    /// public prompt field, on either input or output. Scanners that do not use
+    /// it should return `false`. The stack checks this once when it is
+    /// constructed, so the answer must remain constant for its lifetime.
+    fn needs_prompt(&self) -> bool {
+        true
+    }
+
     /// Inspect/transform `text`. The borrowed [`Verdict::text`] lets a pure
     /// detector return the input with zero allocation.
     ///
@@ -159,6 +169,14 @@ pub trait Scanner: Send + Sync {
     fn stream_hold_floor(&self, buf: &[u8]) -> usize {
         buf.len()
     }
+
+    /// Byte ranges in the streaming buffer `buf` of completed matches a regex
+    /// cannot describe. The runner moves its flush point back so that none of
+    /// these ranges is flushed in pieces. Called once per buffer pass. Default:
+    /// no ranges.
+    fn stream_match_ranges(&self, _buf: &[u8]) -> Vec<std::ops::Range<usize>> {
+        Vec::new()
+    }
 }
 
 /// A single scanner's content-free metrics for one run: counts and per-entity-
@@ -170,25 +188,24 @@ pub trait Scanner: Send + Sync {
 /// scanner itself (the [`Scanner::scan`] surface stays a pure
 /// `text -> Verdict`): the loop times each `scan` and diffs the shared
 /// [`Vault`]'s type-keyed tallies across the call. A transform scanner's
-/// `redacted`/`by_entity_type` is the vault-intern delta; a restore scanner's
-/// `restored` is the vault restore-tally delta; a block scanner's `detections`/
-/// `blocked` come from its [`Verdict`].
+/// `redacted`/`by_entity_type` is the vault redaction-tally delta; a restore
+/// scanner's `restored` is the vault restore-tally delta; a block scanner's
+/// `detections`/`blocked` come from its [`Verdict`].
 #[derive(Debug, Default, Clone, PartialEq)]
 pub struct ScanMetrics {
-    /// Matches or entities this scanner found. For a transform scanner this is
-    /// the number of distinct values redacted; for a block scanner it is `1` on a
-    /// hit, `0` otherwise.
+    /// Units this scanner found. Transform scanners count their redacted units
+    /// (usually distinct values, or characters for a character-removal scanner);
+    /// block scanners report `1` on a hit and `0` otherwise.
     pub detections: u32,
-    /// Distinct values this scanner transformed/replaced (redactions). `0` for a
-    /// pure block scanner, which never rewrites.
+    /// Units this scanner transformed or removed. `0` for a pure block scanner.
     pub redacted: u32,
     /// Sentinels this scanner put back (restore scanners only).
     pub restored: u32,
     /// How many times this scanner blocked: `1` when it returned a [`Block`]
     /// verdict with `valid = false`, else `0`.
     pub blocked: u32,
-    /// Per-entity-**type** redaction counts (`EMAIL`, `AWS_ACCESS_KEY`…). Keys are
-    /// type labels, never values, and the map is empty for a block scanner.
+    /// Per-type redaction counts (`EMAIL`, `AWS_ACCESS_KEY`…). Keys are labels,
+    /// never values, and the map is empty for a block scanner.
     pub by_entity_type: BTreeMap<String, u32>,
     /// Wall-clock time spent in this scanner's [`Scanner::scan`], in microseconds.
     pub latency_us: u64,
@@ -258,6 +275,7 @@ pub struct Blocked {
 pub struct ScannerStack {
     input: Vec<Box<dyn Scanner>>,
     output: Vec<Box<dyn Scanner>>,
+    retain_prompt: bool,
     fail_fast: bool,
     ctx: ScanCtx,
     report: ScanReport,
@@ -285,9 +303,14 @@ impl ScannerStack {
                 Direction::Output => output.push(scanner),
             }
         }
+        let retain_prompt = input
+            .iter()
+            .chain(&output)
+            .any(|scanner| scanner.needs_prompt());
         Self {
             input,
             output,
+            retain_prompt,
             fail_fast,
             ctx,
             report: ScanReport::default(),
@@ -334,6 +357,22 @@ impl ScannerStack {
             .unwrap_or(buf.len())
     }
 
+    pub(crate) fn output_matches(&self, buf: &[u8]) -> OutputMatches {
+        let mut ranges = Vec::new();
+        for scanner in &self.output {
+            ranges.extend(scanner.stream_match_ranges(buf));
+        }
+        ranges.sort_unstable_by_key(|range| (range.start, range.end));
+        let mut merged: Vec<std::ops::Range<usize>> = Vec::new();
+        for range in ranges {
+            match merged.last_mut() {
+                Some(last) if range.start < last.end => last.end = last.end.max(range.end),
+                _ => merged.push(range),
+            }
+        }
+        OutputMatches { ranges: merged }
+    }
+
     /// Whether any output scanner declares [`HoldBack::WholeStream`] — it cannot
     /// judge a chunk in isolation, so the streaming runner must buffer the whole
     /// response and gate before emitting anything (Mode B).
@@ -348,12 +387,13 @@ impl ScannerStack {
     /// `Block` scanner returning `valid = false` short-circuits to [`Blocked`]
     /// when `fail_fast` — the request is rejected before any model forward.
     ///
-    /// The prompt is recorded on the context for output scanners to read.
+    /// The original prompt is refreshed before any scanner runs when an input
+    /// or output scanner needs it; otherwise any previous prompt is cleared.
     ///
     /// # Errors
     /// Returns [`Blocked`] when a `Block` scanner rejects and `fail_fast` is set.
     pub fn run_input(&mut self, text: &str) -> Result<String, Blocked> {
-        self.ctx.prompt = Some(text.to_owned());
+        self.ctx.prompt = self.retain_prompt.then(|| text.to_owned());
         let mut current = text.to_owned();
         for scanner in &self.input {
             // A malfunction on input is treated as clean-pass here; the
@@ -372,7 +412,9 @@ impl ScannerStack {
             );
             self.report.record(scanner.id(), &verdict, metrics);
             let blocked = !verdict.valid && scanner.disposition() == Disposition::Block;
-            current = verdict.text.into_owned();
+            if let Some(next) = replacement_if_changed(&current, verdict.text) {
+                current = next;
+            }
             if blocked && self.fail_fast {
                 return Err(Blocked {
                     scanner: scanner.id(),
@@ -407,7 +449,9 @@ impl ScannerStack {
             );
             self.report.record(scanner.id(), &verdict, metrics);
             let blocked = !verdict.valid && scanner.disposition() == Disposition::Block;
-            current = verdict.text.into_owned();
+            if let Some(next) = replacement_if_changed(&current, verdict.text) {
+                current = next;
+            }
             if blocked && self.fail_fast {
                 return Err(Blocked {
                     scanner: scanner.id(),
@@ -419,20 +463,52 @@ impl ScannerStack {
     }
 }
 
+pub(crate) struct OutputMatches {
+    /// Sorted, merged completed-match ranges.
+    ranges: Vec<std::ops::Range<usize>>,
+}
+
+impl OutputMatches {
+    /// Start of the completed match that `split` falls strictly inside, if any.
+    pub(crate) fn straddling_start(&self, split: usize) -> Option<usize> {
+        let before = self.ranges.partition_point(|range| range.start < split);
+        self.ranges[..before]
+            .last()
+            .filter(|range| split < range.end)
+            .map(|range| range.start)
+    }
+}
+
+/// Convert a verdict's text to a replacement only when it differs from the
+/// current allocation. The common clean-scanner case returns the same borrowed
+/// slice, which must stay in place without allocating another full-text copy.
+fn replacement_if_changed(current: &str, next: std::borrow::Cow<'_, str>) -> Option<String> {
+    match next {
+        std::borrow::Cow::Borrowed(borrowed)
+            if borrowed.as_ptr() == current.as_ptr() && borrowed.len() == current.len() =>
+        {
+            None
+        }
+        std::borrow::Cow::Borrowed(borrowed) => Some(borrowed.to_owned()),
+        std::borrow::Cow::Owned(owned) => Some(owned),
+    }
+}
+
 /// A point-in-time copy of the vault's per-type intern and restore tallies, taken
 /// before a scanner runs so the run loop can diff it afterwards to attribute
 /// redactions and restores to that scanner. Counts and type labels only.
 struct VaultSnapshot {
-    interned: BTreeMap<String, u32>,
+    redacted: BTreeMap<String, u32>,
     restored: BTreeMap<String, u32>,
 }
 
-/// Snapshot the vault's type-keyed tallies. Cheap: a copy of two small maps of
-/// `(type_label, count)`, no plaintext.
+/// Snapshot the vault's type-keyed tallies. The copy scales with distinct
+/// entity-type labels, not the number or size of vault entries, and holds no
+/// plaintext.
 fn vault_snapshot(vault: &Vault) -> VaultSnapshot {
     VaultSnapshot {
-        interned: vault
-            .interned_counts()
+        redacted: vault
+            .redacted_counts()
             .map(|(ty, n)| (ty.to_owned(), n))
             .collect(),
         restored: vault
@@ -444,9 +520,9 @@ fn vault_snapshot(vault: &Vault) -> VaultSnapshot {
 
 /// Derive one scanner's content-free [`ScanMetrics`] from its verdict and the
 /// vault deltas across its run. A transform scanner's `redacted`/`by_entity_type`
-/// is the intern-count delta; a restore scanner's `restored` is the restore-tally
-/// delta; a block scanner's `detections`/`blocked` come from its verdict. No
-/// matched content is read — only counts and entity-type labels.
+/// is the redaction-tally delta; a restore scanner's `restored` is the
+/// restore-tally delta; a block scanner's `detections`/`blocked` come from its
+/// verdict. No matched content is read — only counts and entity-type labels.
 fn derive_metrics(
     scanner: &dyn Scanner,
     verdict: &Verdict<'_>,
@@ -454,7 +530,7 @@ fn derive_metrics(
     vault: &Vault,
     latency: std::time::Duration,
 ) -> ScanMetrics {
-    let by_entity_type = positive_deltas(&before.interned, vault.interned_counts());
+    let by_entity_type = positive_deltas(&before.redacted, vault.redacted_counts());
     let redacted: u32 = by_entity_type.values().sum();
     let restored: u32 = positive_deltas(&before.restored, vault.restored_counts())
         .values()
@@ -526,6 +602,46 @@ mod tests {
         }
     }
 
+    /// A clean scanner that returns the exact input borrow.
+    struct BorrowedPass;
+    impl Scanner for BorrowedPass {
+        fn id(&self) -> ScannerId {
+            ScannerId("test:borrowed-pass")
+        }
+        fn direction(&self) -> Direction {
+            Direction::Input
+        }
+        fn disposition(&self) -> Disposition {
+            Disposition::Transform
+        }
+        fn needs_prompt(&self) -> bool {
+            false
+        }
+        fn scan<'a>(&self, text: &'a str, _ctx: &mut ScanCtx) -> ScanResult<'a> {
+            Ok(Verdict::transformed(Cow::Borrowed(text)))
+        }
+    }
+
+    /// Models an existing custom scanner that reads the original prompt.
+    struct PromptReader(Direction);
+    impl Scanner for PromptReader {
+        fn id(&self) -> ScannerId {
+            ScannerId("test:prompt-reader")
+        }
+        fn direction(&self) -> Direction {
+            self.0
+        }
+        fn disposition(&self) -> Disposition {
+            Disposition::Transform
+        }
+        fn scan<'a>(&self, text: &'a str, ctx: &mut ScanCtx) -> ScanResult<'a> {
+            Ok(match ctx.prompt.as_deref() {
+                Some(prompt) => Verdict::transformed(Cow::Owned(prompt.to_owned())),
+                None => Verdict::transformed(Cow::Borrowed(text)),
+            })
+        }
+    }
+
     /// A block scanner that rejects any text containing "bad".
     struct BlockBad;
     impl Scanner for BlockBad {
@@ -568,6 +684,97 @@ mod tests {
         let mut stack = ScannerStack::new(vec![Box::new(BlockBad), Box::new(Upper)], true);
         assert_eq!(stack.run_input("all good").unwrap(), "ALL GOOD");
         assert!(stack.report().aggregate_risk().abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn clean_stack_preserves_text_and_vault_and_clears_an_unused_prompt() {
+        let mut vault = Vault::deterministic(b"test-key");
+        let sentinel = vault.intern("EMAIL", "kept@example.com", true);
+        let mut stack = ScannerStack::with_ctx(
+            vec![Box::new(BorrowedPass)],
+            true,
+            ScanCtx::new().with_vault(vault).with_prompt("stale prompt"),
+        );
+
+        assert_eq!(
+            stack.run_input("unchanged request").unwrap(),
+            "unchanged request"
+        );
+        assert_eq!(stack.ctx().vault.len(), 1);
+        assert_eq!(
+            stack.ctx().vault.original_for(&sentinel),
+            Some("kept@example.com")
+        );
+        assert!(stack.ctx().prompt.is_none());
+    }
+
+    #[test]
+    fn built_in_restore_scanner_does_not_retain_the_prompt() {
+        let mut stack = ScannerStack::new(
+            vec![
+                Box::new(BorrowedPass),
+                Box::new(crate::scanners::TokenLimitScanner::new(100)),
+                Box::new(crate::scanners::RestoreScanner::for_pii()),
+            ],
+            true,
+        );
+
+        assert_eq!(
+            stack.run_input("unchanged request").unwrap(),
+            "unchanged request"
+        );
+        assert!(stack.ctx().prompt.is_none());
+        assert_eq!(
+            stack.run_output("model response").unwrap(),
+            "model response"
+        );
+    }
+
+    #[test]
+    fn output_scanner_can_still_read_the_original_prompt() {
+        let mut stack = ScannerStack::new(
+            vec![
+                Box::new(crate::scanners::PiiScanner::new()),
+                Box::new(PromptReader(Direction::Output)),
+            ],
+            true,
+        );
+
+        for prompt in ["contact alice@example.com", "next: éß bob@example.com"] {
+            let redacted = stack.run_input(prompt).unwrap();
+            assert!(redacted.contains("[REDACTED_EMAIL_"));
+            assert!(!redacted.contains(prompt));
+            assert_eq!(stack.ctx().prompt.as_deref(), Some(prompt));
+            assert_eq!(stack.run_output("model response").unwrap(), prompt);
+
+            let mut stream = crate::middleware::stream::StreamOutput::new(&stack);
+            assert_eq!(stream.push(&mut stack, "response").unwrap(), "");
+            assert_eq!(stream.finish(&mut stack).unwrap(), prompt);
+        }
+    }
+
+    #[test]
+    fn input_scanner_reads_each_original_prompt_after_an_earlier_rewrite() {
+        let mut stack = ScannerStack::with_ctx(
+            vec![Box::new(Upper), Box::new(PromptReader(Direction::Input))],
+            true,
+            ScanCtx::new().with_prompt("stale prompt"),
+        );
+
+        for prompt in ["first original prompt", "next original prompt: éß"] {
+            assert_eq!(stack.run_input(prompt).unwrap(), prompt);
+            assert_eq!(stack.ctx().prompt.as_deref(), Some(prompt));
+        }
+    }
+
+    #[test]
+    fn replacement_skips_the_same_borrow_and_preserves_a_borrowed_slice() {
+        let current = String::from("unchanged request");
+        assert!(replacement_if_changed(&current, Cow::Borrowed(&current)).is_none());
+        assert_eq!(
+            replacement_if_changed(&current, Cow::Borrowed(&current[10..])).as_deref(),
+            Some("request")
+        );
     }
 
     /// A scanner that interns its whole input as an EMAIL, so a test can observe

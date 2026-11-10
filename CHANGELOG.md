@@ -7,6 +7,52 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-11-09
+
+### Added
+
+- Structural detection for Bittensor keyfile secrets, Substrate secret URIs,
+  named Ethereum private keys, checksummed Bitcoin WIF and BIP32 private keys,
+  and keyword-gated Solana keypairs. Their patterns are included in streaming
+  hold-back.
+- `gm_test_`, `bm_test_`, and `ts_test_` keys, retaining their existing entity
+  types and exact 64-character lowercase-hex shape.
+- `InvisibleTextScanner` removes bidi controls and tag characters outside
+  complete subdivision flag sequences from input, or blocks in block mode.
+- `Scanner::needs_prompt()` (default `true`) declares whether a scanner reads
+  `ScanCtx::prompt`. Built-in scanners return `false`.
+- `Scanner::stream_match_ranges()` (default empty) lets a scanner report
+  completed matches that a regex cannot describe, so the streaming runner
+  never flushes them in pieces.
+
+### Changed
+
+- The generic secret entropy backstop now requires at least three character
+  classes and leaves checksum-valid SS58 account indices/public keys and Bitcoin
+  Base58Check addresses, public extended keys, and valid SRI digest strings
+  intact. Labelled-secret matching skips type annotations, code expressions,
+  environment/template references and exact common placeholders, while preserving
+  detection of quoted literals,
+  typed assignments and literal environment defaults. SS58 validation covers
+  both network-prefix widths and all supported payload/checksum lengths;
+  malformed non-ASCII SRI input is rejected without slicing UTF-8 boundaries.
+- US SSN matches now reject unassigned area, group, and serial numbers. The
+  public Substrate development phrase and standard local development account
+  keys remain unflagged.
+- `ScannerStack::run_input` stores `ScanCtx::prompt` only when an input or
+  output scanner in the stack needs it; otherwise the prompt is cleared, so a
+  stack of built-in scanners no longer keeps a copy of the last input.
+- Scanner stacks copy the text only when a scanner changes it, and the
+  banned-substring and secret scanners no longer make scratch copies of the
+  input. Detection and redaction output are unchanged.
+- The optional `prompt-injection` feature pins `ort` to `=2.0.0-rc.12`.
+
+### Fixed
+
+- Avoid excessive scan time for case-insensitive substring bans with long,
+  nearly matching needles, without copying the input. Per-needle non-overlapping
+  matches and ASCII-only case folding are preserved.
+
 ## [0.2.2]
 
 ### Security
@@ -176,7 +222,8 @@ Initial public release.
 - **Benchmark harness** (`benchmarks/`) — head-to-head precision/recall and
   throughput against Python's `llm-guard` over a shared labelled corpus.
 
-[Unreleased]: https://github.com/taostat/cerberust/compare/v0.2.2...HEAD
+[Unreleased]: https://github.com/taostat/cerberust/compare/v0.3.0...HEAD
+[0.3.0]: https://github.com/taostat/cerberust/compare/v0.2.2...v0.3.0
 [0.2.2]: https://github.com/taostat/cerberust/compare/v0.2.1...v0.2.2
 [0.2.1]: https://github.com/taostat/cerberust/compare/v0.2.0...v0.2.1
 [0.2.0]: https://github.com/taostat/cerberust/compare/v0.1.1...v0.2.0

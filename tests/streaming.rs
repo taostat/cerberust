@@ -285,9 +285,10 @@ fn chained_overlapping_matches_are_resolved_in_near_linear_time() {
         RegexRule::new("a b", "AB").unwrap(),
         RegexRule::new("b a", "BA").unwrap(),
     ];
-    let scanners: Vec<Box<dyn Scanner>> = vec![Box::new(
-        RegexScanner::new(rules).with_direction(Direction::Output),
-    )];
+    let scanners: Vec<Box<dyn Scanner>> = vec![
+        Box::new(RegexScanner::new(rules).with_direction(Direction::Output)),
+        Box::new(SecretScanner::new().with_direction(Direction::Output)),
+    ];
     let mut stack = ScannerStack::new(scanners, true);
     let mut runner = StreamOutput::new(&stack);
     let response = "a b ".repeat(25_000);
@@ -295,6 +296,55 @@ fn chained_overlapping_matches_are_resolved_in_near_linear_time() {
     runner.push(&mut stack, &response).unwrap();
     let elapsed = start.elapsed();
     assert!(elapsed.as_millis() < 2_000, "push took {elapsed:?}");
+}
+
+#[test]
+fn custom_match_ranges_keep_completed_matches_whole() {
+    use cerberust::{Disposition, ScanCtx, ScanResult, Verdict};
+
+    struct Phrase;
+    impl Phrase {
+        fn ranges(buf: &[u8]) -> Vec<std::ops::Range<usize>> {
+            std::str::from_utf8(buf)
+                .unwrap()
+                .match_indices("hidden phrase")
+                .map(|(start, phrase)| start..start + phrase.len())
+                .collect()
+        }
+    }
+    impl Scanner for Phrase {
+        fn id(&self) -> ScannerId {
+            ScannerId("test:phrase")
+        }
+        fn direction(&self) -> Direction {
+            Direction::Output
+        }
+        fn disposition(&self) -> Disposition {
+            Disposition::Transform
+        }
+        fn scan<'a>(&self, text: &'a str, _ctx: &mut ScanCtx) -> ScanResult<'a> {
+            Ok(Verdict::transformed(
+                text.replace("hidden phrase", "[HIDDEN]").into(),
+            ))
+        }
+        fn stream_match_ranges(&self, buf: &[u8]) -> Vec<std::ops::Range<usize>> {
+            Self::ranges(buf)
+        }
+    }
+
+    let rule = RegexRule::new("phrase tail", "TAIL").unwrap();
+    let mut stack = ScannerStack::new(
+        vec![
+            Box::new(Phrase),
+            Box::new(RegexScanner::new(vec![rule]).with_direction(Direction::Output)),
+        ],
+        true,
+    );
+    let mut runner = StreamOutput::new(&stack);
+    assert_eq!(runner.push(&mut stack, "hidden phrase ").unwrap(), "");
+    let mut output = runner.push(&mut stack, "finished!\n").unwrap();
+    output.push_str(&runner.finish(&mut stack).unwrap());
+    assert_eq!(output, "[HIDDEN] finished!\n");
 }
 
 #[test]

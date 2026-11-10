@@ -147,6 +147,10 @@ impl Scanner for WasmScanner {
         self.disposition
     }
 
+    fn needs_prompt(&self) -> bool {
+        false
+    }
+
     fn scan<'a>(&self, text: &'a str, _ctx: &mut ScanCtx) -> ScanResult<'a> {
         let mut guard = self.instance.lock().map_err(|_| ScanError::Detector {
             scanner: self.id,
