@@ -331,6 +331,20 @@ fn typed_chained_assignments_remain_redacted_across_chunks() {
 }
 
 #[test]
+fn colon_labelled_literals_remain_redacted_before_later_assignments() {
+    let secret = "privatepassword9x7";
+    for suffix in [", timeout = 30", ", token = None", " token = None"] {
+        let text = format!("password: {secret}{suffix}\nfinished!\n");
+        let expected = normalize(&stack().run_output(&text).unwrap());
+        assert!(expected.contains("[REDACTED_SECRET_"));
+        assert!(!expected.contains(secret));
+        for chunk_len in 1..=8 {
+            assert_eq!(normalize(&stream(&text, chunk_len, secret)), expected);
+        }
+    }
+}
+
+#[test]
 fn invalid_chained_values_do_not_hold_following_text() {
     let text = "let token: string = password = & invalid!\nfinished!\n";
     let mut scanners = stack();

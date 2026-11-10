@@ -570,6 +570,37 @@ fn typed_assignments_redact_the_literal_value() {
 }
 
 #[test]
+fn colon_labelled_literals_are_not_types_for_later_assignments() {
+    for text in [
+        "password: hunter2, timeout = 30",
+        "password: hunter2, token = None",
+        "password: hunter2 token = None",
+        "password: hunter2, description = 'ordinary text'",
+    ] {
+        assert_redacted(text, "hunter2", "SECRET");
+        let spans = detect_secrets(text);
+        assert_eq!(spans.len(), 1, "{text}: {spans:?}");
+        assert_eq!(&text[spans[0].start..spans[0].end], "hunter2");
+    }
+}
+
+#[test]
+fn typed_assignment_heads_preserve_generics_unions_and_separate_parameters() {
+    for text in [
+        "password: tuple[str, str] = 'hunter2'",
+        "password: Dict[str, List[str | None]] = 'hunter2'",
+        "password: Option<String> | None = 'hunter2'",
+        "password: Wrapper<token: Credentials> = 'hunter2'",
+        "def f(password: str, token: Option<String> = 'hunter2'):",
+        "def f(password: str, token: str='hunter2'):",
+    ] {
+        let spans = detect_secrets(text);
+        assert_eq!(spans.len(), 1, "{text}: {spans:?}");
+        assert_eq!(&text[spans[0].start..spans[0].end], "hunter2");
+    }
+}
+
+#[test]
 fn typed_chained_assignments_redact_the_literal_value() {
     for assignment in [
         "password = 'private9x7'",

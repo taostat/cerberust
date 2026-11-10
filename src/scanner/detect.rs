@@ -1287,6 +1287,8 @@ struct AssignmentSyntax {
 
 impl AssignmentSyntax {
     fn new(text: &str) -> Self {
+        let generic_closes = generic_closes(text);
+        let typed_heads = typed_credential_heads(text, &generic_closes);
         Self {
             closes: expression_closes(text),
             boundaries: text
@@ -1295,12 +1297,9 @@ impl AssignmentSyntax {
                 .filter(|(_, byte)| matches!(byte, b'\r' | b'\n'))
                 .map(|(offset, _)| offset)
                 .collect(),
-            generic_closes: generic_closes(text),
+            generic_closes,
             next_boundary: 0,
-            typed_heads: typed_credential_head_rule()
-                .find_iter(text)
-                .map(|head| (head.start(), head.end()))
-                .collect(),
+            typed_heads,
             next_typed: 0,
         }
     }
@@ -1449,6 +1448,50 @@ impl AssignmentSyntax {
             }
         }
         (end <= limit).then_some(end)
+    }
+}
+
+fn typed_credential_heads(text: &str, closes: &HashMap<usize, usize>) -> Vec<(usize, usize)> {
+    credential_head_rule(false)
+        .find_iter(text)
+        .filter(|head| head.as_str().contains(':'))
+        .filter_map(|head| {
+            let end = type_assignment_end(text, head.end(), closes)?;
+            let candidate = &text[head.start()..end];
+            let typed = typed_credential_head_rule().find(candidate)?;
+            (typed.start() == 0 && typed.end() == candidate.len()).then_some((head.start(), end))
+        })
+        .collect()
+}
+
+fn type_assignment_end(
+    text: &str,
+    mut cursor: usize,
+    closes: &HashMap<usize, usize>,
+) -> Option<usize> {
+    static NAME: OnceLock<Regex> = OnceLock::new();
+    let name =
+        NAME.get_or_init(|| structured_rule(r"(?i)\A[a-z_][a-z0-9_.]*(?:::[a-z_][a-z0-9_.]*)*"));
+    loop {
+        cursor += name.find(&text[cursor..])?.end();
+        loop {
+            let rest = text[cursor..].trim_start_matches([' ', '\t']);
+            cursor = text.len() - rest.len();
+            match rest.as_bytes().first()? {
+                b'<' | b'[' => cursor = *closes.get(&cursor)?,
+                b'?' => cursor += 1,
+                b'|' => {
+                    cursor += 1;
+                    cursor = text.len() - text[cursor..].trim_start_matches([' ', '\t']).len();
+                    break;
+                }
+                b'=' => {
+                    cursor += 1;
+                    return Some(text.len() - text[cursor..].trim_start_matches([' ', '\t']).len());
+                }
+                _ => return None,
+            }
+        }
     }
 }
 
