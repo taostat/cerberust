@@ -615,3 +615,31 @@ fn completed_call_is_not_split_by_another_scanner() {
     assert!(output.contains("[REDACTED_SECRET_"));
     assert!(!output.contains(secret));
 }
+
+#[test]
+fn untyped_chained_assignments_remain_redacted_across_chunks() {
+    let secret = "private-default-9x7k2m";
+    for text in [
+        format!("password = token = '{secret}'\n"),
+        format!("password = pwd = {secret}\n"),
+        format!("password = token = pwd = '{secret}'\n"),
+        format!("password = pwd = token={secret}\n"),
+        format!("password = pwd= {secret}\n"),
+        format!("token = token = '{secret}'\n"),
+        format!("token = pwd='{secret}'\n"),
+        format!("token = pwd=\"{secret}\"\n"),
+    ] {
+        let expected = normalize(&stack().run_output(&text).unwrap());
+        assert!(expected.contains("[REDACTED_SECRET_"));
+        for chunk_len in 1..=8 {
+            assert_eq!(normalize(&stream(&text, chunk_len, secret)), expected);
+        }
+        let mut scanners = stack();
+        let mut runner = StreamOutput::new(&scanners);
+        let emitted = runner
+            .push(&mut scanners, &format!("{text}finished!\n"))
+            .unwrap();
+        assert!(emitted.contains("[REDACTED_SECRET_"));
+        assert!(!emitted.contains(secret));
+    }
+}

@@ -927,3 +927,23 @@ fn deeply_nested_quoted_calls_preserve_references_and_detect_literals() {
         );
     }
 }
+
+#[test]
+fn untyped_chained_assignments_preserve_literal_detection() {
+    let secret = "private-default-9x7k2m";
+    for text in [
+        format!("password = token = '{secret}'"),
+        format!("password = pwd = {secret}"),
+        format!("password = token = pwd = '{secret}'"),
+        format!("password = pwd = token={secret}"),
+        format!("password = pwd= {secret}"),
+        format!("token = token = '{secret}'"),
+        format!("token = pwd='{secret}'"),
+        format!("token = pwd=\"{secret}\""),
+    ] {
+        assert_redacted(&text, secret, "SECRET");
+    }
+    for text in ["password = token=abc", "password = pwd = token=abc"] {
+        assert_redacted(text, "token=abc", "SECRET");
+    }
+}

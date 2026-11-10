@@ -866,25 +866,35 @@ pub(crate) fn expression_hold_floor(buf: &[u8]) -> usize {
         .unwrap_or(buf.len())
 }
 
+fn follows_credential_chain(value: &str, chained: bool) -> bool {
+    let short = value
+        .char_indices()
+        .take_while(|(offset, _)| *offset < 6)
+        .any(|(_, ch)| ch.is_whitespace() || matches!(ch, '\'' | '"' | '&'));
+    (chained || short) && credential_head_rule(true).is_match(value)
+}
+
 fn labelled_expression_bounds(text: &str) -> Vec<(usize, usize, bool)> {
     let mut syntax = None;
     let mut cursor = 0;
     let mut chained = None;
     let mut chain_start = None;
+    let mut typed_chain = false;
     let mut bounds = Vec::new();
     while let Some(head) = credential_head_rule(false).find_at(text, cursor) {
         if chained != Some(head.start()) {
             chain_start = None;
+            typed_chain = false;
         }
         let index = syntax.get_or_insert_with(|| AssignmentSyntax::new(text));
         let typed_end = index.typed_head_end(head.start());
         let value_start = typed_end.unwrap_or(head.end());
-        if (typed_end.is_some() || chained == Some(head.start()))
-            && credential_head_rule(true).is_match(&text[value_start..])
-        {
+        let in_chain = typed_end.is_some() || typed_chain;
+        if follows_credential_chain(&text[value_start..], in_chain) {
             chain_start.get_or_insert(head.start());
             cursor = value_start;
             chained = Some(cursor);
+            typed_chain = in_chain;
             continue;
         }
         chained = None;
@@ -1183,11 +1193,10 @@ fn detect_labelled_secrets(text: &str, spans: &mut Vec<Span>) {
         let index = syntax.get_or_insert_with(|| AssignmentSyntax::new(text));
         let typed_end = index.typed_head_end(head.start());
         let value_start = typed_end.unwrap_or(head.end());
-        if (typed_end.is_some() || chained == Some(head.start()))
-            && credential_head_rule(true).is_match(&text[value_start..])
-        {
+        let in_chain = typed_end.is_some() || chained == Some(head.start());
+        if follows_credential_chain(&text[value_start..], in_chain) {
             cursor = value_start;
-            chained = Some(cursor);
+            chained = in_chain.then_some(cursor);
             continue;
         }
         chained = None;
