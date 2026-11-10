@@ -13,10 +13,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Secret detection of credential values under double-quoted JSON keys in
   running text, such as `{"password": "..."}` or `"db_password": "..."`, where
-  the key ends in a credential label. The value must be a single-token string;
-  `null`, booleans, numbers, objects, placeholders, references, masked values,
-  schema/type words and pagination tokens are left unchanged. The pattern is
-  included in streaming hold-back.
+  the key ends in a credential label. The decoded value must be a single-token
+  string; `null`, booleans, numbers, objects, placeholders, references, masked
+  values, schema/type hints, common display labels and pagination tokens are
+  left unchanged. The pattern is included in streaming hold-back.
 
 ## [0.3.1] - 2026-11-10
 

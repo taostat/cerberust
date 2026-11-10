@@ -111,3 +111,217 @@ fn streamed_json_credentials_never_flush_part_of_the_value() {
         assert!(emitted.ends_with(r#""} to connect.\n"#));
     }
 }
+
+#[test]
+fn json_whitespace_around_the_colon_preserves_value_spans() {
+    for gap in ["\n", "\r\n", " \t\n "] {
+        for (before, after) in [(gap, ""), ("", gap), (gap, gap)] {
+            let text = format!("前 {{\"password\"{before}:{after}\"mysecretvalue\"}} 後");
+            assert_eq!(secret_values(&text), ["mysecretvalue"], "{text:?}");
+        }
+    }
+}
+
+#[test]
+fn json_exemptions_use_decoded_string_contents() {
+    for text in [
+        r#"{"password":"The\naccount\npassword"}"#,
+        r#"{"password":"The\taccount\tpassword"}"#,
+        r#"{"password":"The\u0020account\u0020password"}"#,
+        r#"{"password":"\u0073tring"}"#,
+        r#"{"password":"\u2022\u2022\u2022\u2022"}"#,
+        r#"{"password":"\u003cpassword\u003e"}"#,
+        r#"{"password":"\u0024{DB_PASSWORD}"}"#,
+        r#"{"password":"ab\u0063"}"#,
+    ] {
+        assert!(detect_secrets(text).is_empty(), "{text}");
+    }
+}
+
+#[test]
+fn json_type_hints_are_not_credentials() {
+    for value in [
+        "Optional[str]",
+        "Option<String>",
+        "typing.Optional[str]",
+        "builtins.str",
+        "List[str]",
+        "Sequence",
+        "Mapping",
+        "Union[str,None]",
+    ] {
+        let text = format!(r#"{{"password":"{value}"}}"#);
+        assert!(detect_secrets(&text).is_empty(), "{text}");
+    }
+}
+
+#[test]
+fn json_references_are_not_credentials() {
+    for value in [
+        "process.env.DB_PASSWORD",
+        "env:DB_PASSWORD",
+        "#/components/schemas/Password",
+        "${DB_PASSWORD:-changeme}",
+        "${{secrets.DB_PASSWORD}}",
+    ] {
+        let text = format!(r#"{{"password":"{value}"}}"#);
+        assert!(detect_secrets(&text).is_empty(), "{text}");
+    }
+}
+
+#[test]
+fn json_partially_masked_values_are_not_credentials() {
+    for value in ["********1234", "••••1234", "abcd********", "abcd...wxyz"] {
+        let text = format!(r#"{{"password":"{value}"}}"#);
+        assert!(detect_secrets(&text).is_empty(), "{text}");
+    }
+}
+
+#[test]
+fn json_display_labels_are_not_credentials() {
+    for value in [
+        "Password:",
+        "Passwort",
+        "Mot_de_passe",
+        "Contraseña",
+        "パスワード",
+        "密码",
+    ] {
+        let text = format!(r#"{{"password":"{value}"}}"#);
+        assert!(detect_secrets(&text).is_empty(), "{text}");
+    }
+}
+
+#[test]
+fn backward_pagination_tokens_are_not_credentials() {
+    for key in ["prev_token", "prevToken", "previous_token", "previousToken"] {
+        let text = format!(r#"{{"{key}":"cursor_1234567"}}"#);
+        assert!(detect_secrets(&text).is_empty(), "{text}");
+    }
+}
+
+#[test]
+fn pwd_credentials_are_distinct_from_working_directories() {
+    for key in ["pwd", "PWD", "db_pwd"] {
+        let text = format!(r#"{{"{key}":"mysecretvalue"}}"#);
+        assert_eq!(secret_values(&text), ["mysecretvalue"], "{text}");
+    }
+    for value in [
+        "/home/user/project",
+        "./project",
+        "../project",
+        "~/project",
+        r"C:\\Users\\ann",
+    ] {
+        let text = format!(r#"{{"PWD":"{value}"}}"#);
+        assert!(detect_secrets(&text).is_empty(), "{text}");
+    }
+}
+
+#[test]
+fn escaped_and_unicode_credentials_keep_their_complete_source_spans() {
+    for value in [
+        r"my\u0073ecretvalue",
+        r#"pa\"ss\\word9"#,
+        r"abc\ud83d\udd11def",
+        "clé-secrète-91x7",
+        r"abc\uD800def",
+        r"abc\uDC00def",
+        r"abc\u00",
+        r"abc\qdef",
+        "Optional9x7k2m=",
+        "secretstr9x7k2m",
+        "process.env.KEY-suffix",
+        "${DB_PASSWORD}-suffix",
+        "::::::",
+    ] {
+        let text = format!(r#"前 {{"password":"{value}"}} 後"#);
+        assert_eq!(secret_values(&text), [value], "{text}");
+    }
+}
+
+fn output_stack() -> ScannerStack {
+    ScannerStack::new(
+        vec![Box::new(
+            SecretScanner::new().with_direction(Direction::Output),
+        )],
+        false,
+    )
+}
+
+fn assert_complete_redactions(stack: &ScannerStack, source: &str, emitted: &str, values: &[&str]) {
+    assert_eq!(stack.ctx().vault.len(), values.len(), "{emitted}");
+    let mut expected = source.to_owned();
+    for (placeholder, original) in stack.ctx().vault.entries() {
+        assert!(values.contains(&original), "unexpected span: {original:?}");
+        expected = expected.replace(original, placeholder);
+    }
+    assert_eq!(emitted, expected);
+}
+
+#[test]
+fn streamed_multiline_and_escaped_json_preserves_exact_spans() {
+    let source = concat!(
+        "前 {\"password\"\r\n:\n\"mysecretvalue\", ",
+        r#""api_key":"pa\"ss\\word9", "client_secret":"abc\ud83d\udd11def"} 後 "#,
+    );
+    let values = ["mysecretvalue", r#"pa\"ss\\word9"#, r"abc\ud83d\udd11def"];
+    let mut unary = output_stack();
+    let output = unary.run_output(source).unwrap();
+    assert_complete_redactions(&unary, source, &output, &values);
+    let boundaries: Vec<_> = source.char_indices().map(|(offset, _)| offset).collect();
+    for split in boundaries {
+        let mut stack = output_stack();
+        let mut runner = StreamOutput::new(&stack);
+        let mut emitted = runner.push(&mut stack, &source[..split]).unwrap();
+        emitted.push_str(&runner.push(&mut stack, &source[split..]).unwrap());
+        emitted.push_str(&runner.finish(&mut stack).unwrap());
+        assert_complete_redactions(&stack, source, &emitted, &values);
+    }
+    let mut stack = output_stack();
+    let mut runner = StreamOutput::new(&stack);
+    let mut emitted = String::new();
+    for ch in source.chars() {
+        emitted.push_str(
+            &runner
+                .push(&mut stack, ch.encode_utf8(&mut [0; 4]))
+                .unwrap(),
+        );
+    }
+    emitted.push_str(&runner.finish(&mut stack).unwrap());
+    assert_complete_redactions(&stack, source, &emitted, &values);
+}
+
+#[test]
+fn json_vendor_credentials_are_redacted_once_without_changing_their_type() {
+    let value = format!("gm_live_{}", "a1b2".repeat(16));
+    let source = format!(r#"{{"api_key":"{value}"}}"#);
+    let mut stack = output_stack();
+    let output = stack.run_output(&source).unwrap();
+    assert_complete_redactions(&stack, &source, &output, &[&value]);
+    assert!(output.contains("[REDACTED_GM_API_KEY_"), "{output}");
+}
+
+#[test]
+fn ordinary_json_responses_schemas_and_logs_are_unchanged_when_streamed() {
+    let source = concat!(
+        r#"{"token_type":"bearer","expires_in":3600,"total_tokens":100,"max_tokens":200,"pwd":"/home/user"} "#,
+        r##"{"password":{"type":"string","description":"The user's password"},"api_key":{"$ref":"#/definitions/ApiKey"}} "##,
+        r#"{"password":"The\naccount\npassword","prev_token":"cursor_1234567","password_hint":"first pet"} "#,
+        r#"{"password":"Password:","db_password":"env:DB_PASSWORD","token":"****1234"} "#,
+    );
+    assert_eq!(detect_secrets(source), []);
+    let mut stack = output_stack();
+    let mut runner = StreamOutput::new(&stack);
+    let mut emitted = String::new();
+    for chunk in source.as_bytes().chunks(7) {
+        emitted.push_str(
+            &runner
+                .push(&mut stack, std::str::from_utf8(chunk).unwrap())
+                .unwrap(),
+        );
+    }
+    emitted.push_str(&runner.finish(&mut stack).unwrap());
+    assert_eq!(emitted, source);
+    assert!(stack.ctx().vault.is_empty());
+}

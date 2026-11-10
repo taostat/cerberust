@@ -9,6 +9,7 @@
 //! an `ort`/`gline-rs` detector that emits the same [`Span`]s; the scanner code
 //! is already span-based so it slots in without changing the rewrite path.
 
+use std::borrow::Cow;
 use std::collections::HashMap;
 use std::sync::OnceLock;
 
@@ -735,7 +736,7 @@ const URL_CREDENTIAL_PATTERN: &str = r"[a-z][a-z0-9+.\-]*://[^\s:/@]+:([^\s/@]+)
 const JSON_CREDENTIAL_PATTERN: &str = concat!(
     r#""(?P<key>[A-Za-z0-9_.-]{0,40}?"#,
     r"(?i:password|passwd|pwd|secret|api[_-]?key|apikey|access[_-]?key|token))",
-    r#""[ \t]*:[ \t]*"(?P<value>(?:\\[^\r\n]|[^"\\\r\n])*)""#,
+    r#""[ \t\r\n]*:[ \t\r\n]*"(?P<value>(?:\\[^\r\n]|[^"\\\r\n])*)""#,
 );
 
 fn credential_pattern(typed: bool) -> String {
@@ -1073,20 +1074,109 @@ fn detect_json_labelled_secrets(text: &str, spans: &mut Vec<Span>) {
 
 fn is_json_credential(key: &str, value: &str) -> bool {
     let key = key.to_ascii_lowercase();
-    if key == "pwd" || is_pagination_token_key(&key) {
+    let value = decode_json_string(value).unwrap_or(Cow::Borrowed(value));
+    if is_pagination_token_key(&key) || key == "pwd" && is_directory_path(&value) {
         return false;
     }
     value.len() >= 6
         && !value.contains(char::is_whitespace)
-        && !is_non_secret_assignment_value(value, true, false)
-        && !is_public_hardhat_dev_key(value)
-        && !is_json_placeholder_value(value)
+        && !is_non_secret_assignment_value(&value, true, false)
+        && !is_public_hardhat_dev_key(&value)
+        && !is_json_placeholder_value(&value)
+        && !is_json_type_hint(&value)
+        && !is_json_reference(&value)
+}
+
+/// Decode only for classification; reported spans still cover the source bytes.
+fn decode_json_string(value: &str) -> Option<Cow<'_, str>> {
+    if !value.contains('\\') {
+        return Some(Cow::Borrowed(value));
+    }
+    let mut decoded = String::with_capacity(value.len());
+    let mut chars = value.chars();
+    while let Some(ch) = chars.next() {
+        if ch != '\\' {
+            decoded.push(ch);
+            continue;
+        }
+        decoded.push(match chars.next()? {
+            '"' => '"',
+            '\\' => '\\',
+            '/' => '/',
+            'b' => '\u{0008}',
+            'f' => '\u{000c}',
+            'n' => '\n',
+            'r' => '\r',
+            't' => '\t',
+            'u' => {
+                let mut code = json_hex_quad(&mut chars)?;
+                if (0xd800..=0xdbff).contains(&code) {
+                    if chars.next()? != '\\' || chars.next()? != 'u' {
+                        return None;
+                    }
+                    let low = json_hex_quad(&mut chars)?;
+                    if !(0xdc00..=0xdfff).contains(&low) {
+                        return None;
+                    }
+                    code = 0x10000 + ((code - 0xd800) << 10) + low - 0xdc00;
+                }
+                char::from_u32(code)?
+            }
+            _ => return None,
+        });
+    }
+    Some(Cow::Owned(decoded))
+}
+
+fn json_hex_quad(chars: &mut std::str::Chars<'_>) -> Option<u32> {
+    (0..4).try_fold(0, |code, _| Some(code * 16 + chars.next()?.to_digit(16)?))
+}
+
+fn is_directory_path(value: &str) -> bool {
+    value.starts_with(['/', '\\'])
+        || value.starts_with("./")
+        || value.starts_with("../")
+        || value.starts_with("~/")
+        || matches!(value.as_bytes(), [drive, b':', b'/' | b'\\', ..] if drive.is_ascii_alphabetic())
+}
+
+fn is_json_type_hint(value: &str) -> bool {
+    let mut parts = value
+        .split(|ch: char| !ch.is_ascii_alphabetic() && ch != '_')
+        .filter(|part| !part.is_empty())
+        .peekable();
+    value
+        .bytes()
+        .all(|byte| byte.is_ascii_alphabetic() || b"_.<>[],|?:".contains(&byte))
+        && parts.peek().is_some()
+        && parts.all(|part| {
+            is_type_annotation(part)
+                || matches!(
+                    part.to_ascii_lowercase().as_str(),
+                    "typing" | "builtins" | "union" | "any" | "none" | "null" | "secretstr"
+                )
+        })
+}
+
+fn is_json_reference(value: &str) -> bool {
+    static RE: OnceLock<Regex> = OnceLock::new();
+    value.starts_with("${") && value.ends_with('}')
+        || RE
+            .get_or_init(|| {
+                structured_rule(concat!(
+                    r"^(?:(?:process\.env\.|env:)[A-Za-z_][A-Za-z0-9_]*",
+                    r"|#/[^\s]+)$"
+                ))
+            })
+            .is_match(value)
 }
 
 /// `next_token`, `nextPageToken`, `continuation_token`: opaque paging cursors.
 fn is_pagination_token_key(key: &str) -> bool {
-    const CURSORS: [&str; 6] = [
+    const CURSORS: [&str; 8] = [
         "next",
+        "prev",
+        "previous",
         "page",
         "pagination",
         "continuation",
@@ -1102,7 +1192,7 @@ fn is_pagination_token_key(key: &str) -> bool {
 
 /// Schema and type words, masked values and bracketed placeholders.
 fn is_json_placeholder_value(value: &str) -> bool {
-    const WORDS: [&str; 16] = [
+    const WORDS: [&str; 23] = [
         "string",
         "secret",
         "bearer",
@@ -1119,9 +1209,22 @@ fn is_json_placeholder_value(value: &str) -> bool {
         "object",
         "secretstr",
         "undefined",
+        "passwort",
+        "mot_de_passe",
+        "contraseña",
+        "senha",
+        "пароль",
+        "パスワード",
+        "密码",
     ];
-    let lower = value.to_ascii_lowercase();
-    if WORDS.contains(&lower.as_str()) {
+    let lower = value.to_lowercase();
+    if WORDS.contains(&lower.trim_end_matches([':', '*'])) {
+        return true;
+    }
+    if ["***", "•••", "...", "…", "xxxx", "XXXX"]
+        .iter()
+        .any(|mask| value.contains(mask))
+    {
         return true;
     }
     if value
