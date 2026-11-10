@@ -725,8 +725,8 @@ const CREDENTIAL_VALUE: &str = concat!(
     r#"(?:"(?P<double>(?:\\[^\r\n]|[^"\\\r\n])*\\?)(?:"|[\r\n]|$)"#,
     r"|'(?P<single>(?:\\[^\r\n]|[^'\\\r\n])*\\?)(?:'|[\r\n]|$)",
     r#"|(?P<template>\{\{[ \t]*[a-z_][a-z0-9_.]*[ \t]*\}\}[^\s"'&]*)"#,
-    // Keep a possible expression through spaces for streaming hold-back.
-    r#"|(?P<bare>[a-z_][a-z0-9_.:]*[ \t]*[\[(<][^\r\n"'&]*|[^\s"'&]+))"#,
+    // Balanced expression bounds are indexed separately.
+    r#"|(?P<bare>[a-z_][a-z0-9_.:]*[ \t]*[\[(<]|[^\s"'&]+))"#,
 );
 const URL_CREDENTIAL_PATTERN: &str = r"[a-z][a-z0-9+.\-]*://[^\s:/@]+:([^\s/@]+)@";
 
@@ -807,9 +807,7 @@ fn labelled_secret_rule(typed: bool) -> &'static Regex {
     static TYPED: OnceLock<Regex> = OnceLock::new();
     static UNTYPED: OnceLock<Regex> = OnceLock::new();
     let re = if typed { &TYPED } else { &UNTYPED };
-    re.get_or_init(|| {
-        structured_rule(&credential_pattern(typed).replace(r#"[\[(<][^\r\n"'&]*"#, r"[\[(<]"))
-    })
+    re.get_or_init(|| structured_rule(&credential_pattern(typed)))
 }
 
 fn credential_head_rule() -> &'static Regex {
@@ -844,6 +842,68 @@ pub(crate) fn seed_phrase_match_start(buf: &[u8], split: usize) -> Option<usize>
         .filter(|span| span.start < split && split < span.end)
         .map(|span| span.start)
         .min()
+}
+
+pub(crate) fn expression_hold_floor(buf: &[u8]) -> usize {
+    let Ok(text) = std::str::from_utf8(buf) else {
+        return 0;
+    };
+    labelled_expression_bounds(text)
+        .into_iter()
+        .filter(|(_, _, unfinished)| *unfinished)
+        .map(|(start, _, _)| start)
+        .min()
+        .unwrap_or(buf.len())
+}
+
+pub(crate) fn expression_match_start(buf: &[u8], split: usize) -> Option<usize> {
+    if split == 0 || split >= buf.len() {
+        return None;
+    }
+    let text = std::str::from_utf8(buf).ok()?;
+    labelled_expression_bounds(text)
+        .into_iter()
+        .filter(|&(start, end, _)| start < split && split < end)
+        .map(|(start, _, _)| start)
+        .min()
+}
+
+fn labelled_expression_bounds(text: &str) -> Vec<(usize, usize, bool)> {
+    let mut syntax = None;
+    let mut cursor = 0;
+    let mut bounds = Vec::new();
+    while let Some(head) = credential_head_rule().find_at(text, cursor) {
+        let index = syntax.get_or_insert_with(|| AssignmentSyntax::new(text));
+        let Some(caps) =
+            labelled_secret_rule(index.is_typed(head.start())).captures_at(text, head.start())
+        else {
+            break;
+        };
+        let Some(matched) = caps.get(0) else {
+            break;
+        };
+        if matched.start() != head.start() {
+            cursor = matched.start();
+            continue;
+        }
+        cursor = matched.end();
+        let Some(value) = caps
+            .name("bare")
+            .filter(|v| v.as_str().ends_with(['(', '[', '<']))
+        else {
+            continue;
+        };
+        let limit = index.boundary(value.start(), text.len());
+        let annotation = caps.name("colon").is_some();
+        let (end, unfinished) = index
+            .expression(text, value.start(), limit, annotation)
+            .map_or((limit, limit == text.len()), |(_, consumed)| {
+                (value.start() + consumed, false)
+            });
+        bounds.push((head.start(), end, unfinished));
+        cursor = end;
+    }
+    bounds
 }
 
 /// Detect credentials: known-vendor patterns (the crate's own plus the ported
@@ -1127,9 +1187,7 @@ fn detect_labelled_secrets(text: &str, spans: &mut Vec<Span>) {
             if template.is_none() && v.as_str().ends_with(['(', '[', '<']) {
                 end = index.boundary(start, text.len());
             }
-            if let Some(&limit) = arguments.last() {
-                end = index.argument_end(text, start, end.min(limit), annotation);
-            }
+            end = index.value_end(text, start, end, annotation, arguments.last().copied());
             if template.is_none() {
                 expression = index.expression(text, start, end, annotation);
             }
@@ -1150,7 +1208,7 @@ fn detect_labelled_secrets(text: &str, spans: &mut Vec<Span>) {
             candidate.trim_end_matches([',', ';'])
         } else {
             candidate
-                .split_ascii_whitespace()
+                .split(|ch: char| ch.is_ascii_whitespace() || matches!(ch, '\'' | '"' | '&'))
                 .next()
                 .unwrap_or_default()
                 .trim_end_matches([',', ';'])
@@ -1168,7 +1226,7 @@ fn detect_labelled_secrets(text: &str, spans: &mut Vec<Span>) {
         } else {
             start
                 + candidate
-                    .split_ascii_whitespace()
+                    .split(|ch: char| ch.is_ascii_whitespace() || matches!(ch, '\'' | '"' | '&'))
                     .next()
                     .unwrap_or_default()
                     .len()
@@ -1189,39 +1247,15 @@ struct AssignmentSyntax {
 
 impl AssignmentSyntax {
     fn new(text: &str) -> Self {
-        let mut closes = HashMap::new();
-        let mut boundaries = Vec::new();
-        let mut stack = Vec::new();
-        for (offset, byte) in text.bytes().enumerate() {
-            match byte {
-                b'(' => stack.push((offset, b')')),
-                b'[' => stack.push((offset, b']')),
-                b'{' => stack.push((offset, b'}')),
-                b')' | b']' | b'}' => {
-                    if let Some((open, expected)) = stack.pop() {
-                        if byte == expected {
-                            closes.insert(open, offset + 1);
-                        } else {
-                            stack.clear();
-                        }
-                    }
-                }
-                b'\'' | b'"' | b'\r' | b'\n' | b'&' => {
-                    boundaries.push(offset);
-                    if byte == b'\'' || byte == b'"' {
-                        for (open, _) in stack.drain(..) {
-                            closes.insert(open, offset);
-                        }
-                    }
-                    stack.clear();
-                }
-                _ => {}
-            }
-        }
         Self {
-            closes,
+            closes: expression_closes(text),
+            boundaries: text
+                .bytes()
+                .enumerate()
+                .filter(|(_, byte)| matches!(byte, b'\r' | b'\n'))
+                .map(|(offset, _)| offset)
+                .collect(),
             generic_closes: generic_closes(text),
-            boundaries,
             next_boundary: 0,
             typed_starts: typed_credential_head_rule()
                 .find_iter(text)
@@ -1275,6 +1309,37 @@ impl AssignmentSyntax {
         end
     }
 
+    fn value_end(
+        &self,
+        text: &str,
+        start: usize,
+        end: usize,
+        annotation: bool,
+        limit: Option<usize>,
+    ) -> usize {
+        let next = self.argument_end(text, start, limit.map_or(end, |n| end.min(n)), annotation);
+        if limit.is_some() {
+            return next;
+        }
+        let Some(rest) = text[next..].strip_prefix(',') else {
+            return end;
+        };
+        let rest = rest.trim_start();
+        let name_len = rest
+            .bytes()
+            .take_while(|byte| byte.is_ascii_alphanumeric() || *byte == b'_')
+            .count();
+        if is_identifier(&rest[..name_len])
+            && rest[name_len..].trim_start().starts_with(['=', ':'])
+            && (is_non_secret_assignment_value(text[start..next].trim_end(), false, annotation)
+                || self.expression(text, start, next, annotation).is_some())
+        {
+            next
+        } else {
+            end
+        }
+    }
+
     fn expression(
         &self,
         text: &str,
@@ -1300,12 +1365,12 @@ impl AssignmentSyntax {
         } else {
             &self.closes
         };
-        let close = *closes.get(&(start + open))?;
+        let mut close = *closes.get(&(start + open))?;
+        if !generic {
+            close = self.expression_end(text, close, end)?;
+        }
         if close > end {
             return None;
-        }
-        if text[close..].starts_with(['\'', '"']) && close == end {
-            return Some((open + 1..end - start, end - start));
         }
         let suffix = &text[close..end];
         let complete = suffix.starts_with(char::is_whitespace)
@@ -1318,6 +1383,73 @@ impl AssignmentSyntax {
                 .all(|byte| byte == b')' || annotation && byte == b':');
         complete.then_some((open + 1..close - start - 1, close - start))
     }
+
+    fn expression_end(&self, text: &str, mut end: usize, limit: usize) -> Option<usize> {
+        while end < limit {
+            match text.as_bytes()[end] {
+                b'.' => {
+                    let name_start = end + 1;
+                    end = name_start;
+                    while end < limit
+                        && (text.as_bytes()[end].is_ascii_alphanumeric()
+                            || text.as_bytes()[end] == b'_')
+                    {
+                        end += 1;
+                    }
+                    if !is_identifier(&text[name_start..end]) {
+                        return None;
+                    }
+                }
+                b'(' | b'[' => end = *self.closes.get(&end)?,
+                b'?' => end += 1,
+                _ => break,
+            }
+        }
+        (end <= limit).then_some(end)
+    }
+}
+
+// Index each possible expression independently of surrounding prose. A suffix
+// link skips a balanced group or quoted string in constant time.
+fn expression_closes(text: &str) -> HashMap<usize, usize> {
+    let mut tokens = Vec::new();
+    let mut escaped = false;
+    for (offset, byte) in text.bytes().enumerate() {
+        if matches!(
+            byte,
+            b'(' | b'[' | b'{' | b')' | b']' | b'}' | b'\r' | b'\n'
+        ) || !escaped && matches!(byte, b'\'' | b'"')
+        {
+            tokens.push((offset, byte));
+        }
+        escaped = byte == b'\\' && !escaped;
+    }
+    let mut closes = HashMap::new();
+    let mut next: Vec<Option<usize>> = vec![None; tokens.len() + 1];
+    let mut quotes = [None, None];
+    for (i, &(offset, byte)) in tokens.iter().enumerate().rev() {
+        match byte {
+            b'\r' | b'\n' => quotes = [None, None],
+            b'\'' | b'"' => {
+                let quote = usize::from(byte == b'"');
+                next[i] = quotes[quote].and_then(|end: usize| next[end + 1]);
+                quotes[quote] = Some(i);
+            }
+            b'(' | b'[' | b'{' => {
+                let expected = match byte {
+                    b'(' => b')',
+                    b'[' => b']',
+                    _ => b'}',
+                };
+                if let Some(end) = next[i + 1].filter(|&end| tokens[end].1 == expected) {
+                    closes.insert(offset, tokens[end].0 + 1);
+                    next[i] = next[end + 1];
+                }
+            }
+            _ => next[i] = Some(i),
+        }
+    }
+    closes
 }
 
 /// Shannon entropy (bits per char) of a byte string.

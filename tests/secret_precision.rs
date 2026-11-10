@@ -796,3 +796,70 @@ fn malformed_expression_shaped_passwords_are_not_exempted() {
         "SECRET",
     );
 }
+
+#[test]
+fn malformed_quoted_calls_keep_literal_detection() {
+    for text in [
+        "password=pass(word'9)",
+        "password=pass(word\"9)",
+        "password=pass(word'9'",
+        "password=pass(word\"9\"",
+    ] {
+        assert_redacted(text, "pass(word", "SECRET");
+    }
+}
+
+#[test]
+fn quoted_arguments_preserve_following_credential_references() {
+    for text in [
+        "token=issue('scope',secret=config.secret,other=value)",
+        "token=issue(\"scope\",secret=config.secret,other='text')",
+        "token=issue(')',secret=config.secret,other=value)",
+        "token=issue('\\\'',secret=config.secret,other=value)",
+        "token=issue('a&b',secret=config.secret,other=value)",
+        "Here's token=issue('scope',secret=config.secret,other=value)",
+        "token=issue(\"scope\").with_secret(secret=config.secret)",
+    ] {
+        assert_eq!(detect_secrets(text), [], "code expression: {text}");
+    }
+    assert_redacted(
+        "token=issue('scope',secret=config.secret,password=hunter2)",
+        "hunter2",
+        "SECRET",
+    );
+}
+
+#[test]
+fn ordinary_calls_preserve_credential_reference_arguments() {
+    for text in [
+        "issue(secret=config.secret,other=value)",
+        "issue( secret=config.secret,other='text')",
+        "issue(secret=config.lookup('name'),other=value)",
+        "issue(secret={{ DB_SECRET }},other=value)",
+        "issue(secret=${DB_SECRET},other=value)",
+    ] {
+        assert_eq!(detect_secrets(text), [], "code expression: {text}");
+    }
+    assert_redacted(
+        "issue( secret=config.secret,password=hunter2)",
+        "hunter2",
+        "SECRET",
+    );
+}
+
+#[test]
+fn deeply_nested_quoted_calls_preserve_references_and_detect_literals() {
+    let prefix = "token=f('scope',".repeat(16_384);
+    let suffix = ")".repeat(16_384);
+    assert_eq!(
+        detect_secrets(&format!("{prefix}password=config.password{suffix}")),
+        []
+    );
+    for closing in [&suffix, ""] {
+        assert_redacted(
+            &format!("{prefix}password=hunter2{closing}"),
+            "hunter2",
+            "SECRET",
+        );
+    }
+}

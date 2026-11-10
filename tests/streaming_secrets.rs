@@ -461,3 +461,103 @@ fn unquoted_template_references_remain_intact_across_chunks() {
         assert_eq!(emitted, text);
     }
 }
+
+#[test]
+fn quoted_call_boundaries_preserve_streamed_literal_detection() {
+    let secret = "private-default-9x7k2m";
+    for text in [
+        format!("password=pass({secret}'9)\n"),
+        format!("password=pass({secret}\"9)\n"),
+        format!("password=pass({secret}'9'\n"),
+        format!("password=pass({secret}\"9\"\n"),
+        format!("token=issue('scope',secret=config.secret,password={secret})\n"),
+        format!("issue( secret=config.secret,password={secret})\n"),
+    ] {
+        let expected = normalize(&stack().run_output(&text).unwrap());
+        assert!(expected.contains("[REDACTED_SECRET_"));
+        assert!(!expected.contains(secret));
+        for chunk_len in 1..=8 {
+            assert_eq!(normalize(&stream(&text, chunk_len, secret)), expected);
+        }
+    }
+}
+
+#[test]
+fn streamed_calls_preserve_credential_reference_arguments() {
+    for text in [
+        "token=issue('scope',secret=config.secret,other=value)\n",
+        "token=issue(\"scope\",secret=config.secret,other='text')\n",
+        "token=issue(')',secret=config.secret,other=value)\n",
+        "token=issue('\\\'',secret=config.secret,other=value)\n",
+        "token=issue('a&b',secret=config.secret,other=value)\n",
+        "Here's token=issue('scope',secret=config.secret,other=value)\n",
+        "token=issue(\"scope\").with_secret(secret=config.secret)\n",
+        "issue(secret=config.secret,other=value)\n",
+        "issue( secret=config.secret,other='text')\n",
+        "issue(secret=config.lookup('name'),other=value)\n",
+        "issue(secret={{ DB_SECRET }},other=value)\n",
+        "issue(secret=${DB_SECRET},other=value)\n",
+    ] {
+        for chunk_len in 1..=8 {
+            let mut scanners = stack();
+            let mut runner = StreamOutput::new(&scanners);
+            let mut emitted = String::new();
+            for chunk in text.as_bytes().chunks(chunk_len) {
+                emitted.push_str(
+                    &runner
+                        .push(&mut scanners, std::str::from_utf8(chunk).unwrap())
+                        .unwrap(),
+                );
+            }
+            emitted.push_str(&runner.finish(&mut scanners).unwrap());
+            assert_eq!(emitted, text, "chunk_len={chunk_len}");
+        }
+    }
+}
+
+#[test]
+fn completed_calls_flush_before_end_of_stream() {
+    for text in [
+        "token=issue(config.secret) finished! ",
+        "token=issue('scope',secret=config.secret) finished! ",
+    ] {
+        let mut scanners = stack();
+        let mut runner = StreamOutput::new(&scanners);
+        let mut emitted = runner.push(&mut scanners, text).unwrap();
+        let call = text.strip_suffix(" finished! ").unwrap();
+        assert!(emitted.starts_with(call), "completed call held: {text}");
+        emitted.push_str(&runner.finish(&mut scanners).unwrap());
+        assert_eq!(emitted, text);
+    }
+}
+
+#[test]
+fn completed_call_is_not_split_by_another_scanner() {
+    use cerberust::{RegexRule, RegexScanner};
+
+    let secret = "private-default-9x7k2m";
+    let pattern = format!(r"scope',password={secret}\) tail");
+    let regex = RegexScanner::new(vec![RegexRule::new(&pattern, "TEST").unwrap()])
+        .with_direction(Direction::Output);
+    let mut scanners = ScannerStack::new(
+        vec![
+            Box::new(regex),
+            Box::new(SecretScanner::new().with_direction(Direction::Output)),
+        ],
+        true,
+    );
+    let mut runner = StreamOutput::new(&scanners);
+    assert_eq!(
+        runner
+            .push(
+                &mut scanners,
+                &format!("token=issue('scope',password={secret}) ")
+            )
+            .unwrap(),
+        ""
+    );
+    let mut output = runner.push(&mut scanners, "finished!\n").unwrap();
+    output.push_str(&runner.finish(&mut scanners).unwrap());
+    assert!(output.contains("[REDACTED_SECRET_"));
+    assert!(!output.contains(secret));
+}
