@@ -721,7 +721,8 @@ const CREDENTIAL_TYPE: &str = concat!(
 );
 const CREDENTIAL_VALUE: &str = concat!(
     r#"(?:(?:os\.getenv|os\.environ\.get|getenv)\s*\(\s*(?:"#,
-    r#""[^"\r\n]*"|'[^'\r\n]*')\s*,\s*(?:default\s*=\s*)?)?"#,
+    r#""(?:\\[^\r\n]|[^"\\\r\n])*"|'(?:\\[^\r\n]|[^'\\\r\n])*')"#,
+    r"\s*,\s*(?:default\s*=\s*)?)?",
     r#"(?:"(?P<double>(?:\\[^\r\n]|[^"\\\r\n])*\\?)(?:"|[\r\n]|$)"#,
     r"|'(?P<single>(?:\\[^\r\n]|[^'\\\r\n])*\\?)(?:'|[\r\n]|$)",
     r#"|(?P<template>\{\{[ \t]*[a-z_][a-z0-9_.]*[ \t]*\}\}[^\s"'&]*)"#,

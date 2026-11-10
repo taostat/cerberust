@@ -302,6 +302,24 @@ fn labelled_literals_and_defaults_never_leak_across_chunks() {
 }
 
 #[test]
+fn escaped_environment_lookup_names_preserve_streamed_defaults() {
+    let secret = "private default 9x7k2m";
+    for call in ["os.getenv", "os.environ.get", "getenv"] {
+        for name in [r#""DB_\"PASSWORD""#, r"'DB_\'PASSWORD'"] {
+            for value in [format!("'{secret}'"), format!("default=\"{secret}\"")] {
+                let text = format!("password = {call}({name}, {value})\nfinished!\n");
+                let expected = normalize(&stack().run_output(&text).unwrap());
+                assert!(!expected.contains(secret));
+                assert!(expected.contains(name));
+                for chunk_len in 1..=8 {
+                    assert_eq!(normalize(&stream(&text, chunk_len, secret)), expected);
+                }
+            }
+        }
+    }
+}
+
+#[test]
 fn typed_chained_assignments_remain_redacted_across_chunks() {
     let secret = "private-default-9x7k2m";
     for assignment in [

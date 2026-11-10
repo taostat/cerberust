@@ -818,6 +818,30 @@ fn environment_defaults_accept_double_quoted_lookup_names() {
 }
 
 #[test]
+fn environment_defaults_accept_escaped_lookup_names() {
+    let secret = "private-default-9x7k2m";
+    for call in ["os.getenv", "os.environ.get", "getenv"] {
+        for name in [
+            r#""DB_\"PASSWORD""#,
+            r"'DB_\'PASSWORD'",
+            r#""DB_\\PASSWORD""#,
+        ] {
+            for value in [format!("'{secret}'"), format!("default=\"{secret}\"")] {
+                let text = format!("password = {call}({name}, {value})");
+                assert_type(&text, secret, "SECRET");
+                let output = SecretScanner::new()
+                    .scan(&text, &mut ScanCtx::new())
+                    .unwrap()
+                    .text
+                    .into_owned();
+                assert!(!output.contains(secret));
+                assert!(output.contains(name));
+            }
+        }
+    }
+}
+
+#[test]
 fn deeply_nested_assignments_preserve_literals_and_code_references() {
     let prefix = "token=f(".repeat(16_384);
     let suffix = ")".repeat(16_384);
