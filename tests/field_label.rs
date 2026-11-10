@@ -9,7 +9,10 @@
 
 use cerberust::scanner::detect::{detect_field_secrets, detect_secrets};
 use cerberust::scanners::RestoreScanner;
-use cerberust::{Direction, RestorePolicy, Scanner, ScannerId, ScannerStack, SecretScanner};
+use cerberust::{
+    BanSubstringsScanner, Direction, Disposition, RestorePolicy, ScanCtx, ScanError, ScanResult,
+    Scanner, ScannerId, ScannerStack, SecretScanner,
+};
 use proptest::prelude::*;
 
 fn input_stack() -> ScannerStack {
@@ -103,6 +106,87 @@ fn field_is_set_for_one_run_only() {
     let _ = stack.run_input_field("privateKey", &key).unwrap();
     assert!(stack.ctx().field.is_none());
     assert_eq!(stack.run_input(&key).unwrap(), key);
+}
+
+#[test]
+fn field_is_cleared_after_a_block_verdict() {
+    let key = "b3".repeat(32);
+    for direction in [Direction::Input, Direction::Output] {
+        for fail_fast in [false, true] {
+            let block = BanSubstringsScanner::new(["stop".to_owned()]).with_direction(direction);
+            let secret = SecretScanner::new().with_direction(direction);
+            let mut scanners: Vec<Box<dyn Scanner>> = vec![Box::new(block), Box::new(secret)];
+            if direction == Direction::Output {
+                scanners.reverse();
+            }
+            let mut stack = ScannerStack::new(scanners, fail_fast);
+            let result = match direction {
+                Direction::Input => stack.run_input_field("privateKey", "stop"),
+                Direction::Output => stack.run_output_field("privateKey", "stop"),
+            };
+            assert_eq!(result.is_err(), fail_fast);
+            assert!(stack.ctx().field.is_none(), "{direction:?}, {fail_fast}");
+            let plain = match direction {
+                Direction::Input => stack.run_input(&key),
+                Direction::Output => stack.run_output(&key),
+            };
+            assert_eq!(plain.unwrap(), key);
+        }
+    }
+}
+
+struct FailingScanner(Direction);
+
+impl Scanner for FailingScanner {
+    fn id(&self) -> ScannerId {
+        ScannerId("test:field-error")
+    }
+
+    fn direction(&self) -> Direction {
+        self.0
+    }
+
+    fn disposition(&self) -> Disposition {
+        Disposition::Block
+    }
+
+    fn scan<'a>(&self, _text: &'a str, _ctx: &mut ScanCtx) -> ScanResult<'a> {
+        Err(ScanError::Detector {
+            scanner: self.id(),
+            reason: "test detector error".to_owned(),
+        })
+    }
+}
+
+#[test]
+fn field_survives_a_detector_error_until_the_run_finishes() {
+    let key = "b3".repeat(32);
+    for direction in [Direction::Input, Direction::Output] {
+        for fail_fast in [false, true] {
+            let secret = SecretScanner::new().with_direction(direction);
+            let mut scanners: Vec<Box<dyn Scanner>> =
+                vec![Box::new(FailingScanner(direction)), Box::new(secret)];
+            if direction == Direction::Output {
+                scanners.reverse();
+            }
+            let mut stack = ScannerStack::new(scanners, fail_fast);
+            let redacted = match direction {
+                Direction::Input => stack.run_input_field("privateKey", &key),
+                Direction::Output => stack.run_output_field("privateKey", &key),
+            }
+            .unwrap();
+            assert_eq!(
+                stack.ctx().vault.original_for(&redacted),
+                Some(key.as_str())
+            );
+            assert!(stack.ctx().field.is_none());
+            let plain = match direction {
+                Direction::Input => stack.run_input(&key),
+                Direction::Output => stack.run_output(&key),
+            };
+            assert_eq!(plain.unwrap(), key);
+        }
+    }
 }
 
 #[test]
