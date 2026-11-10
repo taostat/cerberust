@@ -309,6 +309,7 @@ fn spaced_code_expressions_remain_intact_across_chunks() {
         "token = std::env::var (\"TOKEN\")\n",
         "token = cache[index + 1]\n",
         "password: Option< String >\n",
+        "password: Wrapper<token: Credentials>\n",
         "def f(password: Optional[str]):\n",
         "token=issue(secret=config.secret,other=nested('text'))\n",
     ] {
@@ -406,5 +407,57 @@ fn unicode_keyword_matches_remain_held_across_chunks() {
         }
         emitted.push_str(&runner.finish(&mut scanners).unwrap());
         assert_eq!(normalize(&emitted), expected);
+    }
+}
+
+#[test]
+fn unicode_credential_labels_remain_held_across_chunks() {
+    for label in ["ſecret", "paſſword", "api_\u{212a}ey"] {
+        let text = format!("{label} = 'private-default-9x7k2m'\n");
+        let expected = normalize(&stack().run_output(&text).unwrap());
+        assert!(expected.contains("[REDACTED_SECRET_"));
+        let mut scanners = stack();
+        let mut runner = StreamOutput::new(&scanners);
+        let mut emitted = String::new();
+        for ch in text.chars() {
+            emitted.push_str(&runner.push(&mut scanners, &ch.to_string()).unwrap());
+            assert!(!emitted.contains("private-default"));
+        }
+        emitted.push_str(&runner.finish(&mut scanners).unwrap());
+        assert_eq!(normalize(&emitted), expected, "{label}");
+    }
+}
+
+#[test]
+fn substrate_mnemonic_uri_paths_remain_redacted_after_prose() {
+    let phrase = std::iter::repeat_n("abandon", 11)
+        .chain(["about"])
+        .collect::<Vec<_>>()
+        .join(" ");
+    let uri = format!("{phrase}//account/0///private9x7");
+    let text = format!("Here is my URI {uri}\nfinished!\n");
+    let expected = normalize(&stack().run_output(&text).unwrap());
+    assert!(expected.contains("[REDACTED_SUBSTRATE_SECRET_URI_"));
+    for chunk_len in 1..=8 {
+        let emitted = stream(&text, chunk_len, &uri);
+        assert_eq!(normalize(&emitted), expected);
+        assert!(!emitted.contains("private9x7"));
+    }
+}
+
+#[test]
+fn unquoted_template_references_remain_intact_across_chunks() {
+    for text in [
+        "password={{DB_PASSWORD }}\n",
+        "password={{\tDB_PASSWORD\t}}\n",
+    ] {
+        let mut scanners = stack();
+        let mut runner = StreamOutput::new(&scanners);
+        let mut emitted = String::new();
+        for ch in text.chars() {
+            emitted.push_str(&runner.push(&mut scanners, &ch.to_string()).unwrap());
+        }
+        emitted.push_str(&runner.finish(&mut scanners).unwrap());
+        assert_eq!(emitted, text);
     }
 }

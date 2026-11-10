@@ -328,6 +328,37 @@ fn substrate_secret_uris_validate_the_secret_phrase() {
 }
 
 #[test]
+fn substrate_mnemonic_uris_redact_the_complete_value_after_prose() {
+    let phrase = std::iter::repeat_n("abandon", 11)
+        .chain(["about"])
+        .collect::<Vec<_>>()
+        .join(" ");
+    let uri = format!("{phrase}//account/0///private9x7");
+    for prefix in ["Use ", "Here is my URI ", "🦀 Example\n"] {
+        assert_type(&format!("{prefix}{uri}"), &uri, "SUBSTRATE_SECRET_URI");
+    }
+}
+
+#[test]
+fn unquoted_template_references_preserve_internal_whitespace() {
+    for value in [
+        "{{DB_PASSWORD }}",
+        "{{ DB_PASSWORD}}",
+        "{{\tprocess.env.PASSWORD\t}}",
+    ] {
+        let text = format!("password={value}\n");
+        assert_eq!(detect_secrets(&text), [], "template reference: {text}");
+        let text = format!("token=issue(password={value},secret=hunter2)");
+        let spans = detect_secrets(&text);
+        assert_eq!(spans.len(), 1, "{text}");
+        assert_eq!(&text[spans[0].start..spans[0].end], "hunter2");
+    }
+    for value in ["{{DB_PASSWORD }}private9x7", "{{private9x7"] {
+        assert_redacted(&format!("password={value}"), value, "SECRET");
+    }
+}
+
+#[test]
 fn bitcoin_private_keys_require_base58check_and_private_versions() {
     // Public WIF test vector from the Bitcoin Wiki format example.
     let wif = "5HueCGU8rMjxEXxiPuD5BDku4MkFqeZyd4dZ1jvhTVqvbTLvyTJ";
@@ -533,6 +564,15 @@ fn typed_assignments_redact_the_literal_value() {
 }
 
 #[test]
+fn incomplete_labels_do_not_skip_typed_assignments() {
+    let text = format!(
+        "{}password: Optional[str] = 'hunter2'",
+        "password=& ".repeat(1_024)
+    );
+    assert_redacted(&text, "hunter2", "SECRET");
+}
+
+#[test]
 fn environment_defaults_redact_literals_but_preserve_lookup_names() {
     for call in ["os.getenv", "os.environ.get"] {
         for args in [
@@ -683,6 +723,37 @@ fn angle_bracket_type_annotations_are_not_secrets() {
         assert_eq!(detect_secrets(text), [], "type annotation: {text}");
     }
     assert_redacted("password=Option<String>", "Option<String>", "SECRET");
+}
+
+#[test]
+fn generic_type_contents_are_not_scanned_as_assignments() {
+    let text = "password: Wrapper<token: Credentials>";
+    assert_eq!(detect_secrets(text), []);
+
+    let text = format!(
+        "{}{}\npassword=hunter2",
+        "password: Wrapper<".repeat(16_384),
+        ">".repeat(16_384)
+    );
+    let spans = detect_secrets(&text);
+    assert_eq!(spans.len(), 1);
+    assert_eq!(&text[spans[0].start..spans[0].end], "hunter2");
+}
+
+#[test]
+fn malformed_nested_annotations_keep_literal_detection() {
+    for opening in ['<', '['] {
+        for suffix in ["", "=", "]="] {
+            let text = format!(
+                "{}{suffix}\npassword=hunter2",
+                format!("password: Wrapper{opening}").repeat(16_384)
+            );
+            let spans = detect_secrets(&text);
+            assert!(spans.len() > 1);
+            let last = spans.last().unwrap();
+            assert_eq!(&text[last.start..last.end], "hunter2");
+        }
+    }
 }
 
 #[test]

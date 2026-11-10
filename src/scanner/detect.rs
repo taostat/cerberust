@@ -707,31 +707,37 @@ const SECRET_PATTERNS: [(&str, &str); 14] = [
     ("PRIVATE_KEY", r"-----BEGIN [A-Z ]*PRIVATE KEY-----"),
 ];
 
-/// The labelled `key=value` and URL-credential source patterns.
-const CREDENTIAL_PATTERNS: [&str; 2] = [
-    // Keep types and literal environment defaults in the same pattern used by
-    // the streaming DFA, so their assignment context cannot flush too early.
-    concat!(
-        r"(?i)\b(?:password|passwd|pwd|secret|api[_-]?key|token|access[_-]?key)\b",
-        // A type needs recognizable syntax, or whitespace before '='. An
-        // arbitrary alphanumeric value ending in '=' may be a Base64 secret.
-        r"(?:[ \t]*:[ \t]*(?:",
-        r"[a-z_][a-z0-9_.<>\[\], |?:]*[ \t]+",
-        r"|(?:str|string|int|integer|float|bool|boolean|bytes)",
-        r"|[a-z_][a-z0-9_.]*(?:\[[a-z0-9_. ,|\[\]]+\]|<[a-z0-9_:<> ,]+>)",
-        r")[ \t]*=[ \t]*|\s*(?:(?P<colon>:)|=)\s*)",
-        concat!(
-            r#"(?:(?:os\.getenv|os\.environ\.get|getenv)\s*\(\s*(?:"#,
-            r#""[^"\r\n]*"|'[^'\r\n]*')\s*,\s*(?:default\s*=\s*)?)?"#
-        ),
-        r#"(?:"(?P<double>(?:\\[^\r\n]|[^"\\\r\n])*\\?)(?:"|[\r\n]|$)"#,
-        r"|'(?P<single>(?:\\[^\r\n]|[^'\\\r\n])*\\?)(?:'|[\r\n]|$)",
-        // Keep a possible expression through spaces, stopping at quotes or the
-        // line boundary. Delimiter validation below determines its actual end.
-        r#"|(?P<bare>[a-z_][a-z0-9_.:]*[ \t]*[\[(<][^\r\n"'&]*|[^\s"'&]+))"#,
-    ),
-    r"[a-z][a-z0-9+.\-]*://[^\s:/@]+:([^\s/@]+)@",
-];
+const CREDENTIAL_LABEL: &str =
+    r"(?i)\b(?:password|passwd|pwd|secret|api[_-]?key|token|access[_-]?key)\b";
+const CREDENTIAL_ASSIGNMENT: &str = r"\s*(?:(?P<colon>:)|=)\s*";
+// A type needs recognizable syntax, or whitespace before '='. An arbitrary
+// alphanumeric value ending in '=' may be a Base64 secret.
+const CREDENTIAL_TYPE: &str = concat!(
+    r"[ \t]*:[ \t]*(?:",
+    r"[a-z_][a-z0-9_.<>\[\], |?:]*[ \t]+",
+    r"|(?:str|string|int|integer|float|bool|boolean|bytes)",
+    r"|[a-z_][a-z0-9_.]*(?:\[[a-z0-9_. ,|\[\]]+\]|<[a-z0-9_:<> ,]+>)",
+    r")[ \t]*=[ \t]*"
+);
+const CREDENTIAL_VALUE: &str = concat!(
+    r#"(?:(?:os\.getenv|os\.environ\.get|getenv)\s*\(\s*(?:"#,
+    r#""[^"\r\n]*"|'[^'\r\n]*')\s*,\s*(?:default\s*=\s*)?)?"#,
+    r#"(?:"(?P<double>(?:\\[^\r\n]|[^"\\\r\n])*\\?)(?:"|[\r\n]|$)"#,
+    r"|'(?P<single>(?:\\[^\r\n]|[^'\\\r\n])*\\?)(?:'|[\r\n]|$)",
+    r#"|(?P<template>\{\{[ \t]*[a-z_][a-z0-9_.]*[ \t]*\}\}[^\s"'&]*)"#,
+    // Keep a possible expression through spaces for streaming hold-back.
+    r#"|(?P<bare>[a-z_][a-z0-9_.:]*[ \t]*[\[(<][^\r\n"'&]*|[^\s"'&]+))"#,
+);
+const URL_CREDENTIAL_PATTERN: &str = r"[a-z][a-z0-9+.\-]*://[^\s:/@]+:([^\s/@]+)@";
+
+fn credential_pattern(typed: bool) -> String {
+    let assignment = if typed {
+        format!("(?:{CREDENTIAL_TYPE}|{CREDENTIAL_ASSIGNMENT})")
+    } else {
+        CREDENTIAL_ASSIGNMENT.to_owned()
+    };
+    format!("{CREDENTIAL_LABEL}{assignment}{CREDENTIAL_VALUE}")
+}
 
 /// The secret detector patterns as DFA hold-back source strings: every vendor
 /// pattern plus the labelled-secret and URL-credential patterns. The high-
@@ -756,7 +762,10 @@ pub fn secret_pattern_sources() -> Vec<String> {
                     }
                 }),
         )
-        .chain(CREDENTIAL_PATTERNS.iter().map(|p| (*p).to_owned()))
+        .chain([
+            credential_pattern(true).replace(r"\b", ""),
+            URL_CREDENTIAL_PATTERN.to_owned(),
+        ])
         .chain(gitleaks::pattern_sources())
         .collect()
 }
@@ -794,17 +803,29 @@ fn validated_secret_rules() -> &'static [ValidatedSecretRule] {
 
 /// `key = value` / `key: value` pairs whose key names a credential. The value
 /// span (named quoted/bare groups), not the label or type, is redacted.
-fn labelled_secret_rule() -> &'static Regex {
-    static RE: OnceLock<Regex> = OnceLock::new();
-    RE.get_or_init(|| {
-        structured_rule(&CREDENTIAL_PATTERNS[0].replace(r#"[\[(<][^\r\n"'&]*"#, r"[\[(<]"))
+fn labelled_secret_rule(typed: bool) -> &'static Regex {
+    static TYPED: OnceLock<Regex> = OnceLock::new();
+    static UNTYPED: OnceLock<Regex> = OnceLock::new();
+    let re = if typed { &TYPED } else { &UNTYPED };
+    re.get_or_init(|| {
+        structured_rule(&credential_pattern(typed).replace(r#"[\[(<][^\r\n"'&]*"#, r"[\[(<]"))
     })
+}
+
+fn credential_head_rule() -> &'static Regex {
+    static RE: OnceLock<Regex> = OnceLock::new();
+    RE.get_or_init(|| structured_rule(&format!("{CREDENTIAL_LABEL}{CREDENTIAL_ASSIGNMENT}")))
+}
+
+fn typed_credential_head_rule() -> &'static Regex {
+    static RE: OnceLock<Regex> = OnceLock::new();
+    RE.get_or_init(|| structured_rule(&format!("{CREDENTIAL_LABEL}{CREDENTIAL_TYPE}")))
 }
 
 /// A `scheme://user:password@host` URL credential. The password span (group 1).
 fn url_credential_rule() -> &'static Regex {
     static RE: OnceLock<Regex> = OnceLock::new();
-    RE.get_or_init(|| structured_rule(CREDENTIAL_PATTERNS[1]))
+    RE.get_or_init(|| structured_rule(URL_CREDENTIAL_PATTERN))
 }
 
 /// The streaming hold point for seed phrases: see `bip39::hold_floor`.
@@ -866,9 +887,9 @@ fn detect_validated_secrets(text: &str, keyword_hits: &[bool], spans: &mut Vec<S
             let Some(value) = caps.name("secret") else {
                 continue;
             };
-            if (rule.validator)(value.as_str()) {
+            if let Some(offset) = validated_secret_start(rule, value.as_str()) {
                 spans.push(Span::new(
-                    value.start(),
+                    value.start() + offset,
                     value.end(),
                     rule.ty,
                     rule.confidence,
@@ -876,6 +897,27 @@ fn detect_validated_secrets(text: &str, keyword_hits: &[bool], spans: &mut Vec<S
             }
         }
     }
+}
+
+fn validated_secret_start(rule: &ValidatedSecretRule, value: &str) -> Option<usize> {
+    if (rule.validator)(value) {
+        return Some(0);
+    }
+    if rule.ty != "SUBSTRATE_SECRET_URI" {
+        return None;
+    }
+    // A mnemonic URI candidate can include prose before the actual seed.
+    let path = value.find('/')?;
+    value[..path].char_indices().find_map(|(offset, ch)| {
+        let next = offset + ch.len_utf8();
+        (ch.is_ascii_whitespace()
+            && value
+                .as_bytes()
+                .get(next)
+                .is_some_and(u8::is_ascii_alphabetic)
+            && valid_substrate_uri(&value[next..]))
+        .then_some(next)
+    })
 }
 
 fn valid_prefixed_seed(value: &str) -> bool {
@@ -1056,9 +1098,22 @@ fn detect_labelled_secrets(text: &str, spans: &mut Vec<Span>) {
     let mut syntax = None;
     let mut arguments = Vec::new();
     let mut cursor = 0;
-    while let Some(caps) = labelled_secret_rule().captures_at(text, cursor) {
+    while let Some(head) = credential_head_rule().find_at(text, cursor) {
+        let index = syntax.get_or_insert_with(|| AssignmentSyntax::new(text));
+        let typed = index.is_typed(head.start());
+        let Some(caps) = labelled_secret_rule(typed).captures_at(text, head.start()) else {
+            break;
+        };
+        if let Some(matched) = caps
+            .get(0)
+            .filter(|matched| matched.start() != head.start())
+        {
+            cursor = matched.start();
+            continue;
+        }
         let quoted = caps.name("double").or_else(|| caps.name("single"));
-        let Some(v) = quoted.or_else(|| caps.name("bare")) else {
+        let template = caps.name("template");
+        let Some(v) = quoted.or(template).or_else(|| caps.name("bare")) else {
             break;
         };
         let start = v.start();
@@ -1069,23 +1124,30 @@ fn detect_labelled_secrets(text: &str, spans: &mut Vec<Span>) {
         let mut end = v.end();
         let mut expression = None;
         if quoted.is_none() {
-            let index = syntax.get_or_insert_with(|| AssignmentSyntax::new(text));
-            if v.as_str().ends_with(['(', '[', '<']) {
+            if template.is_none() && v.as_str().ends_with(['(', '[', '<']) {
                 end = index.boundary(start, text.len());
             }
             if let Some(&limit) = arguments.last() {
                 end = index.argument_end(text, start, end.min(limit), annotation);
             }
-            expression = index.expression(text, start, end, annotation);
+            if template.is_none() {
+                expression = index.expression(text, start, end, annotation);
+            }
         }
-        if let Some((contents, _)) = expression {
-            cursor = start + contents.start;
-            arguments.push(start + contents.end);
+        if let Some((contents, consumed)) = expression {
+            if annotation && text.as_bytes()[start + contents.start - 1] == b'<' {
+                cursor = start + consumed;
+            } else {
+                cursor = start + contents.start;
+                arguments.push(start + contents.end);
+            }
             continue;
         }
         let candidate = &text[start..end];
         let value = if quoted.is_some() {
             candidate
+        } else if template.is_some() {
+            candidate.trim_end_matches([',', ';'])
         } else {
             candidate
                 .split_ascii_whitespace()
@@ -1101,6 +1163,8 @@ fn detect_labelled_secrets(text: &str, spans: &mut Vec<Span>) {
         }
         cursor = if quoted.is_some() {
             caps.get(0).map_or(end, |m| m.end())
+        } else if template.is_some() {
+            end
         } else {
             start
                 + candidate
@@ -1114,8 +1178,13 @@ fn detect_labelled_secrets(text: &str, spans: &mut Vec<Span>) {
 
 struct AssignmentSyntax {
     closes: HashMap<usize, usize>,
+    generic_closes: HashMap<usize, usize>,
     boundaries: Vec<usize>,
     next_boundary: usize,
+    // Find typed assignments once, without retrying the type look-ahead at
+    // every nested label in an annotation that has no assignment.
+    typed_starts: Vec<usize>,
+    next_typed: usize,
 }
 
 impl AssignmentSyntax {
@@ -1151,9 +1220,26 @@ impl AssignmentSyntax {
         }
         Self {
             closes,
+            generic_closes: generic_closes(text),
             boundaries,
             next_boundary: 0,
+            typed_starts: typed_credential_head_rule()
+                .find_iter(text)
+                .map(|head| head.start())
+                .collect(),
+            next_typed: 0,
         }
+    }
+
+    fn is_typed(&mut self, start: usize) -> bool {
+        while self
+            .typed_starts
+            .get(self.next_typed)
+            .is_some_and(|&offset| offset < start)
+        {
+            self.next_typed += 1;
+        }
+        self.typed_starts.get(self.next_typed) == Some(&start)
     }
 
     fn boundary(&mut self, start: usize, fallback: usize) -> usize {
@@ -1171,14 +1257,15 @@ impl AssignmentSyntax {
     }
 
     fn argument_end(&self, text: &str, start: usize, end: usize, annotation: bool) -> usize {
-        if annotation {
-            return start + bare_argument_end(&text[start..end], true);
-        }
         let mut cursor = start;
         while cursor < end {
             match text.as_bytes()[cursor] {
                 b',' | b')' | b']' | b'}' => return cursor,
                 b'(' | b'[' | b'{' => match self.closes.get(&cursor) {
+                    Some(&close) if close <= end => cursor = close,
+                    _ => return end,
+                },
+                b'<' if annotation => match self.generic_closes.get(&cursor) {
                     Some(&close) if close <= end => cursor = close,
                     _ => return end,
                 },
@@ -1197,8 +1284,9 @@ impl AssignmentSyntax {
     ) -> Option<(std::ops::Range<usize>, usize)> {
         let value = &text[start..end];
         let open = value.find(['(', '[', '<'])?;
-        if value.as_bytes()[open] == b'<' {
-            return delimited_expression(value, annotation, text[end..].starts_with(['\'', '"']));
+        let generic = value.as_bytes()[open] == b'<';
+        if generic && !annotation {
+            return None;
         }
         if !value[..open]
             .trim_end()
@@ -1207,7 +1295,12 @@ impl AssignmentSyntax {
         {
             return None;
         }
-        let close = *self.closes.get(&(start + open))?;
+        let closes = if generic {
+            &self.generic_closes
+        } else {
+            &self.closes
+        };
+        let close = *closes.get(&(start + open))?;
         if close > end {
             return None;
         }
@@ -1527,86 +1620,28 @@ fn is_type_annotation(value: &str) -> bool {
     )
 }
 
-/// Recognize a code path followed by balanced delimiters. A candidate may end
-/// inside the expression only when the regex stopped at a quoted argument.
-/// Angle brackets denote generics only in annotation context.
-fn delimited_expression(
-    value: &str,
-    annotation: bool,
-    continued: bool,
-) -> Option<(std::ops::Range<usize>, usize)> {
-    let open = value.find(['(', '[', '<'])?;
-    let (name, arguments) = value.split_at(open);
-    if !name
-        .trim_end()
-        .split("::")
-        .all(|part| is_identifier(part) || is_dotted_identifier(part))
-    {
-        return None;
-    }
-    let generic = arguments.starts_with('<');
-    if generic && !annotation {
-        return None;
-    }
-    let mut closers = Vec::new();
-    for (offset, byte) in arguments.bytes().enumerate() {
-        if generic && !byte.is_ascii_alphanumeric() && !b"_., []|?:<>".contains(&byte) {
-            return None;
-        }
+// Index balanced generic delimiters once, including for malformed annotations.
+fn generic_closes(text: &str) -> HashMap<usize, usize> {
+    let mut closes = HashMap::new();
+    let mut stack = Vec::new();
+    for (offset, byte) in text.bytes().enumerate() {
         match byte {
-            b'(' => closers.push(b')'),
-            b'[' => closers.push(b']'),
-            b'{' => closers.push(b'}'),
-            b'<' if generic => closers.push(b'>'),
-            b')' | b']' | b'}' | b'>' if byte != b'>' || generic => {
-                if closers.pop() != Some(byte) {
-                    return None;
-                }
-                if closers.is_empty() {
-                    // A nested assignment can include its enclosing calls'
-                    // closing parentheses in the same bare candidate.
-                    let suffix = arguments[offset + 1..]
-                        .split_ascii_whitespace()
-                        .next()
-                        .unwrap_or_default();
-                    // Whitespace after the expression separates subsequent
-                    // prose or assignments from this value.
-                    let complete = arguments[offset + 1..].starts_with(char::is_whitespace)
-                        || suffix
-                            .trim_end_matches([',', ';'])
-                            .bytes()
-                            .all(|b| b == b')' || annotation && b == b':');
-                    return complete.then_some((open + 1..open + offset, open + offset + 1));
+            b'<' => stack.push((offset, b'>')),
+            b'[' => stack.push((offset, b']')),
+            b'>' | b']' => {
+                if let Some((open, expected)) = stack.pop() {
+                    if byte == expected {
+                        closes.insert(open, offset + 1);
+                    } else {
+                        stack.clear();
+                    }
                 }
             }
-            _ => {}
+            byte if byte.is_ascii_alphanumeric() || b"_., |?:".contains(&byte) => {}
+            _ => stack.clear(),
         }
     }
-    continued.then_some((open + 1..value.len(), value.len()))
-}
-
-/// Within a recognized call, commas and closing delimiters separate arguments;
-/// inside a nested expression they remain part of that argument.
-fn bare_argument_end(value: &str, annotation: bool) -> usize {
-    let mut closers = Vec::new();
-    for (offset, byte) in value.bytes().enumerate() {
-        if closers.is_empty() && matches!(byte, b',' | b')' | b']' | b'}') {
-            return offset;
-        }
-        match byte {
-            b'(' => closers.push(b')'),
-            b'[' => closers.push(b']'),
-            b'{' => closers.push(b'}'),
-            b'<' if annotation => closers.push(b'>'),
-            b')' | b']' | b'}' | b'>'
-                if (byte != b'>' || annotation) && closers.pop() != Some(byte) =>
-            {
-                return value.len();
-            }
-            _ => {}
-        }
-    }
-    value.len()
+    closes
 }
 
 fn is_dotted_identifier(value: &str) -> bool {
