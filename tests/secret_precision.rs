@@ -719,6 +719,30 @@ fn truncated_quoted_assignments_still_redact() {
 }
 
 #[test]
+fn overlapping_assignment_labels_preserve_literal_detection() {
+    let secret = "private-default-9x7k2m";
+    for quote in ['\'', '"'] {
+        for prefix in [
+            " ",
+            "prefix ",
+            "prefix: ",
+            "\t",
+            "password= ",
+            "secret=\u{2003} ",
+        ] {
+            let text = format!("secret={quote}{prefix}password={quote}{secret}{quote}");
+            assert_type(&text, secret, "SECRET");
+            assert_redacted(&text, secret, "SECRET");
+        }
+        for space in [" ", "\u{2003} "] {
+            let text = format!("token=f(password={space}password={quote}{secret}{quote})");
+            assert_type(&text, secret, "SECRET");
+            assert_redacted(&text, secret, "SECRET");
+        }
+    }
+}
+
+#[test]
 fn exempt_calls_do_not_hide_nested_secret_assignments() {
     for text in [
         "token=issue(secret=hunter2)",

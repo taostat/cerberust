@@ -913,7 +913,14 @@ fn labelled_expression_bounds(text: &str) -> Vec<(usize, usize, bool)> {
             cursor = matched.start();
             continue;
         }
-        cursor = matched.end();
+        cursor = caps
+            .name("double")
+            .or_else(|| caps.name("single"))
+            .map(|value| (value, true))
+            .or_else(|| caps.name("bare").map(|value| (value, false)))
+            .map_or(matched.end(), |(value, quoted)| {
+                value.start() + credential_value_resume(value.as_str(), quoted)
+            });
         let Some(value) = caps
             .name("bare")
             .filter(|v| v.as_str().ends_with(['(', '[', '<']))
@@ -932,12 +939,7 @@ fn labelled_expression_bounds(text: &str) -> Vec<(usize, usize, bool)> {
             });
         bounds.push((start, end, unfinished));
         cursor = if expression.is_none() && !unfinished {
-            value.start()
-                + text[value.start()..end]
-                    .split(|ch: char| ch.is_ascii_whitespace() || matches!(ch, '\'' | '"' | '&'))
-                    .next()
-                    .unwrap_or_default()
-                    .len()
+            value.start() + credential_value_resume(&text[value.start()..end], false)
         } else {
             end
         };
@@ -1270,19 +1272,31 @@ fn detect_labelled_secrets(text: &str, spans: &mut Vec<Span>) {
         {
             spans.push(Span::new(start, start + value.len(), "SECRET", 0.9));
         }
-        cursor = if quoted.is_some() {
-            caps.get(0).map_or(end, |m| m.end())
-        } else if template.is_some() {
+        cursor = if template.is_some() {
             end
         } else {
-            start
-                + candidate
-                    .split(|ch: char| ch.is_ascii_whitespace() || matches!(ch, '\'' | '"' | '&'))
-                    .next()
-                    .unwrap_or_default()
-                    .len()
+            start + credential_value_resume(candidate, quoted.is_some())
         };
     }
+}
+
+fn credential_value_resume(value: &str, quoted: bool) -> usize {
+    let token = value
+        .split(|ch: char| {
+            ch.is_ascii_whitespace()
+                || quoted && ch.is_whitespace()
+                || matches!(ch, '\'' | '"' | '&')
+        })
+        .next()
+        .unwrap_or_default();
+    if quoted && token.chars().take(6).count() < 6 {
+        return 0;
+    }
+    credential_head_rule(false)
+        .find_iter(token)
+        .last()
+        .filter(|head| head.end() == token.len())
+        .map_or(token.len(), |head| head.start())
 }
 
 struct AssignmentSyntax {

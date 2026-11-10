@@ -677,3 +677,25 @@ fn multiline_expression_bounds_follow_literal_consumption() {
         }
     }
 }
+
+#[test]
+fn overlapping_assignment_labels_remain_redacted_across_chunks() {
+    let secret = "private-default-9x7k2m";
+    for quote in ['\'', '"'] {
+        let mut texts: Vec<_> = [" ", "prefix ", "prefix: ", "\t", "password= "]
+            .map(|prefix| {
+                format!("secret={quote}{prefix}password={quote}{secret}{quote}\nfinished!\n")
+            })
+            .into();
+        texts.push(format!(
+            "token=f(password= password={quote}{secret}{quote})\nfinished!\n"
+        ));
+        for text in texts {
+            let expected = normalize(&stack().run_output(&text).unwrap());
+            assert!(!expected.contains(secret));
+            for chunk_len in 1..=8 {
+                assert_eq!(normalize(&stream(&text, chunk_len, secret)), expected);
+            }
+        }
+    }
+}
