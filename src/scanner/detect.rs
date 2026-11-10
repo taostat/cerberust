@@ -1159,23 +1159,70 @@ fn is_json_type_hint(value: &str) -> bool {
     {
         return true;
     }
-    let Some(open) = value.find(['[', '<']) else {
-        return false;
-    };
-    let head = &value[..open];
-    if !head
-        .bytes()
-        .all(|byte| byte.is_ascii_alphabetic() || b"_.:".contains(&byte))
-        || !is_json_type_words(head)
-    {
-        return false;
+    let mut rest = value;
+    loop {
+        let head_len = rest
+            .bytes()
+            .take_while(|byte| byte.is_ascii_alphabetic() || b"_.:".contains(byte))
+            .count();
+        let head = &rest[..head_len];
+        rest = &rest[head_len..];
+        let generic = rest.starts_with(['[', '<']);
+        if !(is_json_type_words(head)
+            || generic && matches!(head, "Vec" | "std::vec::Vec" | "Map" | "Record" | "Promise"))
+        {
+            return false;
+        }
+        if generic {
+            let Some(end) = json_type_argument_end(rest) else {
+                return false;
+            };
+            rest = &rest[end..];
+        }
+        while let Some(tail) = rest.strip_prefix("[]") {
+            rest = tail;
+        }
+        rest = rest.strip_prefix('?').unwrap_or(rest);
+        if rest.is_empty() {
+            return true;
+        }
+        let Some(tail) = rest.strip_prefix(['|', '&']) else {
+            return false;
+        };
+        rest = tail;
     }
-    let closes = if value.as_bytes()[open] == b'<' {
-        generic_closes(value)
-    } else {
-        expression_closes(value)
-    };
-    closes.get(&open) == Some(&value.len())
+}
+
+fn json_type_argument_end(value: &str) -> Option<usize> {
+    let mut stack = Vec::new();
+    let mut quote = None;
+    let mut escaped = false;
+    for (offset, ch) in value.char_indices() {
+        if let Some(delimiter) = quote {
+            if !escaped && ch == delimiter {
+                quote = None;
+            }
+            escaped = !escaped && ch == '\\';
+            continue;
+        }
+        match ch {
+            '\'' | '"' => quote = Some(ch),
+            '<' => stack.push('>'),
+            '[' => stack.push(']'),
+            '(' => stack.push(')'),
+            '{' => stack.push('}'),
+            '>' | ']' | ')' | '}' => {
+                if stack.pop() != Some(ch) {
+                    return None;
+                }
+                if stack.is_empty() {
+                    return Some(offset + ch.len_utf8());
+                }
+            }
+            _ => {}
+        }
+    }
+    None
 }
 
 fn is_json_type_words(value: &str) -> bool {
@@ -1212,7 +1259,7 @@ fn is_json_type_words(value: &str) -> bool {
 
 fn is_json_reference(value: &str) -> bool {
     static RE: OnceLock<Regex> = OnceLock::new();
-    value.starts_with("${") && value.ends_with('}')
+    (value.starts_with("${") || value.starts_with("#{")) && value.ends_with('}')
         || RE
             .get_or_init(|| {
                 structured_rule(concat!(
@@ -1223,6 +1270,8 @@ fn is_json_reference(value: &str) -> bool {
                     r"|\$ENV\{[A-Za-z_][A-Za-z0-9_]*\}",
                     r"|%env\([A-Za-z_][A-Za-z0-9_]*\)%",
                     r"|%[A-Za-z_][A-Za-z0-9_]*%",
+                    r"|@Microsoft\.KeyVault\((?:SecretUri=https://[^\s()]+",
+                    r"|VaultName=[A-Za-z0-9-]+;SecretName=[A-Za-z0-9-]+(?:;SecretVersion=[A-Za-z0-9-]+)?)\)",
                     r"|#/[^\s]+)$"
                 ))
             })
@@ -1306,6 +1355,7 @@ fn is_json_placeholder_value(value: &str) -> bool {
     if ["[redacted]", "<redacted>", "[masked]", "<masked>"]
         .iter()
         .any(|mask| lower.contains(mask))
+        || contains_json_redaction_sentinel(&lower)
     {
         return true;
     }
@@ -1329,6 +1379,12 @@ fn is_json_placeholder_value(value: &str) -> bool {
             | (Some(b'{'), Some(b'}'))
             | (Some(b'('), Some(b')'))
     )
+}
+
+fn contains_json_redaction_sentinel(value: &str) -> bool {
+    static RE: OnceLock<Regex> = OnceLock::new();
+    RE.get_or_init(|| structured_rule(r"\[redacted_[a-z0-9_]+_[0-9]+_[a-f0-9]{8}\]"))
+        .is_match(value)
 }
 
 fn is_json_placeholder_name(value: &str) -> bool {

@@ -9,7 +9,7 @@
 
 use cerberust::middleware::stream::StreamOutput;
 use cerberust::scanner::detect::{detect_secrets, resolve_overlaps};
-use cerberust::{Direction, Scanner, ScannerStack, SecretScanner};
+use cerberust::{Direction, RegexRule, RegexScanner, Scanner, ScannerStack, SecretScanner};
 
 fn secret_values(text: &str) -> Vec<&str> {
     resolve_overlaps(detect_secrets(text))
@@ -635,5 +635,103 @@ fn json_exemptions_require_complete_placeholders_references_and_types() {
         let mut stack = output_stack();
         let output = stack.run_output(&source).unwrap();
         assert_complete_redactions(&stack, &source, &output, &[value]);
+    }
+}
+
+#[test]
+fn json_composed_generic_types_are_not_credentials() {
+    for value in [
+        "Optional[Credential]|None",
+        "None|Optional[Credential]",
+        "Optional[Credential][]",
+        "Optional[Credential]?",
+        "Option<&Credential>",
+        "Option<&[u8]>",
+        "List[Literal['redacted']]|None",
+        "Vec<u8>",
+        "std::vec::Vec<u8>",
+        "Map<String,String>",
+        "Record<string,string>",
+        "Promise<string>",
+    ] {
+        assert_unchanged_json(&format!(r#"{{"password":"{value}"}}"#));
+    }
+    for value in [
+        "Optional[Credential]|mysecretvalue",
+        "Optional[Credential][]9x7",
+        "Option<&Credential>9x7",
+        "Optional[Credential]9x7?",
+        "Option<&Credential]",
+        "Vec<u8>9x7",
+        "Promise<string>9x7",
+        "Promise",
+        "Record",
+    ] {
+        let source = format!(r#"{{"password":"{value}"}}"#);
+        assert_eq!(secret_values(&source), [value], "{source}");
+    }
+}
+
+#[test]
+fn json_partial_redaction_sentinels_are_not_redacted_again() {
+    for value in [
+        "prefix-[REDACTED_SECRET_1_ab12cd34]-suffix",
+        "[redacted_api_key_12_ab12cd34]1234",
+        r"prefix-\u005bREDACTED_SECRET_1_ab12cd34\u005d",
+    ] {
+        assert_unchanged_json(&format!(r#"{{"password":"{value}"}}"#));
+    }
+    let value = "prefix-[REDACTED_SECRET_1_ab12cd34-suffix";
+    assert_eq!(
+        secret_values(&format!(r#"{{"password":"{value}"}}"#)),
+        [value]
+    );
+}
+
+#[test]
+fn json_labels_preserve_partial_redactions_from_earlier_scanners() {
+    let source = r#"{"password":"prefix-mysecretvalue-suffix"} "#;
+    for streamed in [false, true] {
+        let custom = RegexScanner::new(vec![RegexRule::new("mysecretvalue", "CUSTOM").unwrap()])
+            .with_direction(Direction::Output);
+        let mut stack = ScannerStack::new(
+            vec![
+                Box::new(SecretScanner::new().with_direction(Direction::Output)),
+                Box::new(custom),
+            ],
+            false,
+        );
+        let output = if streamed {
+            let mut runner = StreamOutput::new(&stack);
+            let mut output = String::new();
+            for ch in source.chars() {
+                output.push_str(
+                    &runner
+                        .push(&mut stack, ch.encode_utf8(&mut [0; 4]))
+                        .unwrap(),
+                );
+            }
+            output.push_str(&runner.finish(&mut stack).unwrap());
+            output
+        } else {
+            stack.run_output(source).unwrap()
+        };
+        assert_complete_redactions(&stack, source, &output, &["mysecretvalue"]);
+    }
+}
+
+#[test]
+fn json_managed_secret_and_expression_references_are_not_credentials() {
+    for value in [
+        "#{environment.DB_PASSWORD}",
+        "#{systemProperties['db.password']}",
+        "@Microsoft.KeyVault(SecretUri=https://myvault.vault.azure.net/secrets/dbpassword)",
+        "@Microsoft.KeyVault(VaultName=myvault;SecretName=dbpassword)",
+        "@Microsoft.KeyVault(VaultName=myvault;SecretName=dbpassword;SecretVersion=abc123)",
+    ] {
+        assert_unchanged_json(&format!(r#"{{"password":"{value}"}}"#));
+        let literal = format!("{value}-suffix");
+        let source = format!(r#"{{"password":"{literal}"}}"#);
+        assert_eq!(secret_values(&source), [literal.as_str()], "{source}");
     }
 }
