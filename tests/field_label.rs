@@ -100,6 +100,47 @@ fn escaped_characters_map_back_to_the_whole_original_value() {
 }
 
 #[test]
+fn field_spans_preserve_text_around_an_embedded_secret() {
+    let secret = "4b825dc642cb6eb9a060e54bf8d69288fbee4904";
+    for (prefix, suffix) in [
+        ("", ""),
+        ("safe ", " safe suffix"),
+        ("é\"\\ ", " fin\"\\\r\n\té"),
+        ("é\r\n ", " fin"),
+        ("🙂\t ", " fin"),
+        ("", " fin\"\\\né"),
+        ("é\"\\ ", ""),
+    ] {
+        let value = format!("{prefix}{secret}{suffix}");
+        assert_eq!(detect_secrets(&value), []);
+        let spans = detect_field_secrets("sourcegraph", &value);
+        assert!(!spans.is_empty(), "{value:?}");
+        for span in spans {
+            assert_eq!(span.start, prefix.len(), "{value:?}");
+            assert_eq!(span.end, prefix.len() + secret.len(), "{value:?}");
+        }
+
+        for direction in [Direction::Input, Direction::Output] {
+            let scanner = SecretScanner::new().with_direction(direction);
+            let mut stack = ScannerStack::new(vec![Box::new(scanner)], false);
+            let redacted = match direction {
+                Direction::Input => stack.run_input_field("sourcegraph", &value),
+                Direction::Output => stack.run_output_field("sourcegraph", &value),
+            }
+            .unwrap();
+            assert_eq!(stack.ctx().vault.len(), 1);
+            let (placeholder, original) = stack.ctx().vault.entries().next().unwrap();
+            assert_eq!(original, secret, "{value:?}, {direction:?}");
+            assert_eq!(
+                redacted,
+                format!("{prefix}{placeholder}{suffix}"),
+                "{value:?}, {direction:?}"
+            );
+        }
+    }
+}
+
+#[test]
 fn field_is_set_for_one_run_only() {
     let key = "b3".repeat(32);
     let mut stack = input_stack();
