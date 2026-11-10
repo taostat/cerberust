@@ -840,3 +840,67 @@ fn json_primitive_type_compositions_are_not_credentials() {
         assert_eq!(secret_values(&source), [value], "{source}");
     }
 }
+
+#[test]
+fn json_type_fragments_remain_credential_literals() {
+    for value in [
+        "Optional[str",
+        "String]",
+        "string|",
+        "string<",
+        "Sequence::",
+        "String..String",
+    ] {
+        let source = format!(r#"{{"password":"{value}"}} "#);
+        assert_eq!(secret_values(&source), [value], "{source}");
+        let mut stack = output_stack();
+        let mut runner = StreamOutput::new(&stack);
+        let mut emitted = String::new();
+        for ch in source.chars() {
+            emitted.push_str(
+                &runner
+                    .push(&mut stack, ch.encode_utf8(&mut [0; 4]))
+                    .unwrap(),
+            );
+        }
+        emitted.push_str(&runner.finish(&mut stack).unwrap());
+        assert_complete_redactions(&stack, &source, &emitted, &[value]);
+    }
+    for value in ["&&String", "string?[]", "System.String&"] {
+        assert_unchanged_json(&format!(r#"{{"password":"{value}"}}"#));
+    }
+}
+
+#[test]
+fn json_braced_references_must_cover_the_complete_value() {
+    for value in [
+        "${DB_PASSWORD}-suffix}",
+        "#{systemProperties['db.password']}-suffix}",
+        "#{settings['}']}-suffix}",
+        r"\u0024{DB_PASSWORD}-suffix}",
+    ] {
+        let source = format!(r#"{{"password":"{value}"}} "#);
+        assert_eq!(secret_values(&source), [value], "{source}");
+        let mut stack = output_stack();
+        let mut runner = StreamOutput::new(&stack);
+        let mut emitted = String::new();
+        for ch in source.chars() {
+            emitted.push_str(
+                &runner
+                    .push(&mut stack, ch.encode_utf8(&mut [0; 4]))
+                    .unwrap(),
+            );
+        }
+        emitted.push_str(&runner.finish(&mut stack).unwrap());
+        assert_complete_redactions(&stack, &source, &emitted, &[value]);
+    }
+    for value in [
+        "${DB_PASSWORD:-${DEFAULT_PASSWORD}}",
+        "${DB_PASSWORD:can't}",
+        "${{secrets.DB_PASSWORD}}",
+        "#{systemProperties['db.password']}",
+        "#{settings['}']}",
+    ] {
+        assert_unchanged_json(&format!(r#"{{"password":"{value}"}}"#));
+    }
+}

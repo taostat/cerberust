@@ -1152,15 +1152,12 @@ fn is_directory_path(value: &str) -> bool {
 }
 
 fn is_json_type_hint(value: &str) -> bool {
-    if value
-        .bytes()
-        .all(|byte| byte.is_ascii_alphabetic() || b"_.<>[],|?:&".contains(&byte))
-        && is_json_type_words(value)
-    {
-        return true;
-    }
     let mut rest = value;
     loop {
+        rest = rest.trim_start_matches('&');
+        while let Some(tail) = rest.strip_prefix("[]") {
+            rest = tail;
+        }
         let head_len = rest
             .bytes()
             .take_while(|byte| byte.is_ascii_alphabetic() || b"_.:".contains(byte))
@@ -1179,11 +1176,11 @@ fn is_json_type_hint(value: &str) -> bool {
             };
             rest = &rest[end..];
         }
-        while let Some(tail) = rest.strip_prefix("[]") {
-            rest = tail;
-        }
         rest = rest.strip_prefix('?').unwrap_or(rest);
-        if rest.is_empty() {
+        while let Some(tail) = rest.strip_prefix("[]") {
+            rest = tail.strip_prefix('?').unwrap_or(tail);
+        }
+        if rest.is_empty() || matches!(rest, "&" | "&&") {
             return true;
         }
         let Some(tail) = rest.strip_prefix(['|', '&']) else {
@@ -1227,12 +1224,8 @@ fn json_type_argument_end(value: &str) -> Option<usize> {
 
 fn is_json_type_words(value: &str) -> bool {
     let value = value.strip_prefix("java.lang.").unwrap_or(value);
-    let mut parts = value
-        .split(|ch: char| !ch.is_ascii_alphabetic() && ch != '_')
-        .filter(|part| !part.is_empty())
-        .peekable();
-    parts.peek().is_some()
-        && parts.all(|part| {
+    value.split("::").all(|path| {
+        path.split('.').all(|part| {
             is_type_annotation(part)
                 || matches!(
                     part.to_ascii_lowercase().as_str(),
@@ -1259,11 +1252,12 @@ fn is_json_type_words(value: &str) -> bool {
                         | "types"
                 )
         })
+    })
 }
 
 fn is_json_reference(value: &str) -> bool {
     static RE: OnceLock<Regex> = OnceLock::new();
-    (value.starts_with("${") || value.starts_with("#{")) && value.ends_with('}')
+    is_json_braced_reference(value)
         || is_json_secret_reference(value)
         || RE
             .get_or_init(|| {
@@ -1283,6 +1277,46 @@ fn is_json_reference(value: &str) -> bool {
                 ))
             })
             .is_match(value)
+}
+
+fn is_json_braced_reference(value: &str) -> bool {
+    if !(value.starts_with("${") || value.starts_with("#{")) {
+        return false;
+    }
+    for quoted in [true, false] {
+        let mut depth = 0usize;
+        let mut quote = None;
+        let mut escaped = false;
+        for (offset, ch) in value.char_indices().skip(1) {
+            if escaped {
+                escaped = false;
+                continue;
+            }
+            if ch == '\\' {
+                escaped = true;
+            } else if let Some(delimiter) = quote {
+                if ch == delimiter {
+                    quote = None;
+                }
+            } else {
+                match ch {
+                    '\'' | '"' if quoted => quote = Some(ch),
+                    '{' => depth += 1,
+                    '}' => {
+                        depth -= 1;
+                        if depth == 0 {
+                            return offset + 1 == value.len();
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        }
+        if quote.is_none() {
+            break;
+        }
+    }
+    false
 }
 
 fn is_json_secret_reference(value: &str) -> bool {
