@@ -10,8 +10,8 @@
 //! opposite restore default.
 
 use crate::scanner::detect::{
-    detect_secrets, expression_hold_floor, resolve_overlaps, secret_match_ranges,
-    secret_pattern_sources, seed_phrase_hold_floor,
+    detect_field_secrets, detect_secrets, expression_hold_floor, resolve_overlaps,
+    secret_match_ranges, secret_pattern_sources, seed_phrase_hold_floor,
 };
 use crate::scanner::{
     Direction, Disposition, RestorePolicy, ScanCtx, ScanResult, Scanner, ScannerId, Verdict,
@@ -87,7 +87,11 @@ impl Scanner for SecretScanner {
     }
 
     fn scan<'a>(&self, text: &'a str, ctx: &mut ScanCtx) -> ScanResult<'a> {
-        let spans = resolve_overlaps(detect_secrets(text));
+        let spans = match &ctx.field {
+            Some(field) => detect_field_secrets(field, text),
+            None => detect_secrets(text),
+        };
+        let spans = resolve_overlaps(spans);
         let restorable =
             self.direction == Direction::Input && self.policy == RestorePolicy::RoundTrip;
         Ok(Verdict::transformed(redact(
