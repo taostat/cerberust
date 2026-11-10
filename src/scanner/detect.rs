@@ -923,7 +923,8 @@ fn labelled_expression_bounds(text: &str) -> Vec<(usize, usize, bool)> {
                     .map(|value| (value, false))
             })
             .map_or(matched.end(), |(value, quoted)| {
-                value.start() + credential_value_resume(value.as_str(), quoted)
+                value.start()
+                    + credential_value_resume(&text[value.start()..], value.as_str(), quoted)
             });
         let Some(value) = caps
             .name("bare")
@@ -943,7 +944,8 @@ fn labelled_expression_bounds(text: &str) -> Vec<(usize, usize, bool)> {
             });
         bounds.push((start, end, unfinished));
         cursor = if expression.is_none() && !unfinished {
-            value.start() + credential_value_resume(&text[value.start()..end], false)
+            value.start()
+                + credential_value_resume(&text[value.start()..], &text[value.start()..end], false)
         } else {
             end
         };
@@ -1276,11 +1278,12 @@ fn detect_labelled_secrets(text: &str, spans: &mut Vec<Span>) {
         {
             spans.push(Span::new(start, start + value.len(), "SECRET", 0.9));
         }
-        cursor = start + credential_value_resume(candidate, quoted.is_some());
+        cursor = start + credential_value_resume(&text[start..], candidate, quoted.is_some());
     }
 }
 
-fn credential_value_resume(value: &str, quoted: bool) -> usize {
+fn credential_value_resume(remaining: &str, value: &str, quoted: bool) -> usize {
+    static LABEL: OnceLock<Regex> = OnceLock::new();
     let token = value
         .split(|ch: char| {
             ch.is_ascii_whitespace()
@@ -1292,11 +1295,16 @@ fn credential_value_resume(value: &str, quoted: bool) -> usize {
     if quoted && token.chars().take(6).count() < 6 {
         return 0;
     }
-    credential_head_rule(false)
+    LABEL
+        .get_or_init(|| structured_rule(CREDENTIAL_LABEL))
         .find_iter(token)
         .last()
-        .filter(|head| head.end() == token.len())
-        .map_or(token.len(), |head| head.start())
+        .filter(|label| {
+            credential_head_rule(true)
+                .find(&remaining[label.start()..])
+                .is_some_and(|head| label.start() + head.end() >= token.len())
+        })
+        .map_or(token.len(), |label| label.start())
 }
 
 struct AssignmentSyntax {

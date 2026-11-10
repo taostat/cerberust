@@ -718,3 +718,18 @@ fn template_values_preserve_following_streamed_assignments() {
         }
     }
 }
+
+#[test]
+fn overlapping_labels_preserve_streamed_assignments_after_whitespace() {
+    let secret = "private default 9x7k2m";
+    for prefix in ["token=token= ", "token=token:\n"] {
+        for quote in ['\'', '"'] {
+            let text = format!("{prefix}password = {quote}{secret}{quote}\nfinished!\n");
+            let expected = normalize(&stack().run_output(&text).unwrap());
+            assert!(!expected.contains(secret));
+            for chunk_len in 1..=8 {
+                assert_eq!(normalize(&stream(&text, chunk_len, secret)), expected);
+            }
+        }
+    }
+}

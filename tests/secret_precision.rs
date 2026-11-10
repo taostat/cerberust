@@ -757,6 +757,18 @@ fn template_values_preserve_following_literal_assignments() {
 }
 
 #[test]
+fn overlapping_labels_preserve_assignments_after_whitespace() {
+    let secret = "private-default-9x7k2m";
+    for prefix in ["token=token= ", "token=token:\n", "token=token=\u{2003}"] {
+        for quote in ["", "'", "\""] {
+            let text = format!("{prefix}password = {quote}{secret}{quote}");
+            assert_type(&text, secret, "SECRET");
+            assert_redacted(&text, secret, "SECRET");
+        }
+    }
+}
+
+#[test]
 fn exempt_calls_do_not_hide_nested_secret_assignments() {
     for text in [
         "token=issue(secret=hunter2)",
