@@ -96,6 +96,12 @@ Four layers of detection, all emitting spans into the shared redact path:
    For example, `password: Optional[str] = None`,
    `token = self.tokenizer(text)`, `password=${DB_PASSWORD}` and
    `token=YOUR_TOKEN` do not produce labelled-secret redactions.
+   A double-quoted JSON key ending in a credential label, such as
+   `{"password": "…"}` or `"db_password": "…"`, also produces value-only spans
+   when its decoded value is a single-token string. `null`, booleans, numbers,
+   objects, masked or bracketed placeholders, references, schema/type hints,
+   common display labels, and pagination keys such as `next_token` and
+   `previous_token` are left intact by this rule.
 
 3. **Seed phrases** — runs of words from the BIP39 English wordlist, redacted as
    `SEED_PHRASE`. Words may be separated by whitespace, commas, semicolons,
