@@ -736,7 +736,7 @@ const URL_CREDENTIAL_PATTERN: &str = r"[a-z][a-z0-9+.\-]*://[^\s:/@]+:([^\s/@]+)
 const JSON_CREDENTIAL_PATTERN: &str = concat!(
     r#""(?P<key>[A-Za-z0-9_.-]{0,40}?"#,
     r"(?i:password|passwd|pwd|secret|api[_-]?key|apikey|access[_-]?key|token))",
-    r#""[ \t\r\n]*:[ \t\r\n]*"(?P<value>(?:\\[^\r\n]|[^"\\\r\n])*)""#,
+    r#""[ \t\r\n]*:[ \t\r\n]*"(?P<value>(?:\\\S|[^"\\\s])*\\?)(?:"|$)"#,
 );
 
 fn credential_pattern(typed: bool) -> String {
@@ -1079,6 +1079,7 @@ fn is_json_credential(key: &str, value: &str) -> bool {
         return false;
     }
     value.len() >= 6
+        && !value.eq_ignore_ascii_case(&key)
         && !value.contains(char::is_whitespace)
         && !is_non_secret_assignment_value(&value, true, false)
         && !is_public_hardhat_dev_key(&value)
@@ -1147,13 +1148,21 @@ fn is_json_type_hint(value: &str) -> bool {
         .peekable();
     value
         .bytes()
-        .all(|byte| byte.is_ascii_alphabetic() || b"_.<>[],|?:".contains(&byte))
+        .all(|byte| byte.is_ascii_alphabetic() || b"_.<>[],|?:&".contains(&byte))
         && parts.peek().is_some()
         && parts.all(|part| {
             is_type_annotation(part)
                 || matches!(
                     part.to_ascii_lowercase().as_str(),
-                    "typing" | "builtins" | "union" | "any" | "none" | "null" | "secretstr"
+                    "typing"
+                        | "builtins"
+                        | "union"
+                        | "any"
+                        | "none"
+                        | "null"
+                        | "secretstr"
+                        | "std"
+                        | "pydantic"
                 )
         })
 }
@@ -1165,6 +1174,7 @@ fn is_json_reference(value: &str) -> bool {
             .get_or_init(|| {
                 structured_rule(concat!(
                     r"^(?:(?:process\.env\.|env:)[A-Za-z_][A-Za-z0-9_]*",
+                    r"|%[A-Za-z_][A-Za-z0-9_]*%",
                     r"|#/[^\s]+)$"
                 ))
             })
@@ -1173,7 +1183,7 @@ fn is_json_reference(value: &str) -> bool {
 
 /// `next_token`, `nextPageToken`, `continuation_token`: opaque paging cursors.
 fn is_pagination_token_key(key: &str) -> bool {
-    const CURSORS: [&str; 8] = [
+    const CURSORS: [&str; 10] = [
         "next",
         "prev",
         "previous",
@@ -1182,6 +1192,8 @@ fn is_pagination_token_key(key: &str) -> bool {
         "continuation",
         "sync",
         "cursor",
+        "starting",
+        "resume",
     ];
     let Some(prefix) = key.strip_suffix("token") else {
         return false;
@@ -1221,7 +1233,7 @@ fn is_json_placeholder_value(value: &str) -> bool {
     if WORDS.contains(&lower.trim_end_matches([':', '*'])) {
         return true;
     }
-    if ["***", "•••", "...", "…", "xxxx", "XXXX"]
+    if ["***", "•••", "...", "…", "xxxx", "XXXX", "###"]
         .iter()
         .any(|mask| value.contains(mask))
     {

@@ -325,3 +325,140 @@ fn ordinary_json_responses_schemas_and_logs_are_unchanged_when_streamed() {
     assert_eq!(emitted, source);
     assert!(stack.ctx().vault.is_empty());
 }
+
+#[test]
+fn truncated_json_credentials_keep_the_complete_value() {
+    for value in [
+        "mysecretvalue",
+        r"my\u0073ecretvalue",
+        r"mysecretvalue\",
+        r#"my\"secretvalue"#,
+        "clé-secrète-91x7",
+    ] {
+        let source = format!(r#"tool arguments: {{"password": "{value}"#);
+        assert_eq!(secret_values(&source), [value], "{source}");
+        let mut stack = output_stack();
+        let mut runner = StreamOutput::new(&stack);
+        let mut emitted = String::new();
+        for ch in source.chars() {
+            emitted.push_str(
+                &runner
+                    .push(&mut stack, ch.encode_utf8(&mut [0; 4]))
+                    .unwrap(),
+            );
+            assert!(source[..source.find(value).unwrap()].starts_with(&emitted));
+        }
+        emitted.push_str(&runner.finish(&mut stack).unwrap());
+        assert_complete_redactions(&stack, &source, &emitted, &[value]);
+    }
+}
+
+fn assert_unchanged_json(source: &str) {
+    assert!(detect_secrets(source).is_empty(), "{source}");
+    let mut stack = output_stack();
+    let mut runner = StreamOutput::new(&stack);
+    let mut emitted = String::new();
+    for ch in source.chars() {
+        emitted.push_str(
+            &runner
+                .push(&mut stack, ch.encode_utf8(&mut [0; 4]))
+                .unwrap(),
+        );
+    }
+    emitted.push_str(&runner.finish(&mut stack).unwrap());
+    assert_eq!(emitted, source);
+    assert!(stack.ctx().vault.is_empty());
+}
+
+#[test]
+fn json_field_names_used_as_placeholders_are_not_credentials() {
+    for (key, value) in [
+        ("api_key", "api_key"),
+        ("apiKey", "ApiKey"),
+        ("access_token", "ACCESS_TOKEN"),
+        ("db_password", "db_password"),
+        ("api_key", r"api\u005fkey"),
+    ] {
+        let source = format!(r#"{{"{key}":"{value}"}}"#);
+        assert_unchanged_json(&source);
+    }
+}
+
+#[test]
+fn json_hash_masked_values_are_not_credentials() {
+    for value in ["######1234", "abcd########", r"\u0023\u0023\u00231234"] {
+        let source = format!(r#"{{"password":"{value}"}}"#);
+        assert_unchanged_json(&source);
+    }
+}
+
+#[test]
+fn json_qualified_type_hints_are_not_credentials() {
+    for value in [
+        "std::string::String",
+        "std::option::Option<String>",
+        "Option<&str>",
+        "pydantic.SecretStr",
+    ] {
+        let source = format!(r#"{{"password":"{value}"}}"#);
+        assert_unchanged_json(&source);
+    }
+}
+
+#[test]
+fn json_windows_environment_references_are_not_credentials() {
+    for value in ["%Db_Password%", "%db_password%"] {
+        let source = format!(r#"{{"password":"{value}"}}"#);
+        assert_unchanged_json(&source);
+    }
+}
+
+#[test]
+fn json_starting_and_resume_tokens_are_not_credentials() {
+    for key in [
+        "StartingToken",
+        "starting_token",
+        "resume_token",
+        "resumeToken",
+    ] {
+        let source = format!(r#"{{"{key}":"cursor_1234567"}}"#);
+        assert_unchanged_json(&source);
+    }
+}
+
+#[test]
+fn streamed_json_descriptions_release_text_before_the_closing_quote() {
+    let mut stack = output_stack();
+    let mut runner = StreamOutput::new(&stack);
+    let mut source = r#"{"password":"The account password "#.to_owned();
+    let mut emitted = runner.push(&mut stack, &source).unwrap();
+    for _ in 0..100 {
+        let chunk = "validation instructions; ".repeat(4);
+        source.push_str(&chunk);
+        emitted.push_str(&runner.push(&mut stack, &chunk).unwrap());
+        assert!(source.len() - emitted.len() < 256);
+    }
+    source.push_str(r#""}"#);
+    emitted.push_str(&runner.push(&mut stack, r#""}"#).unwrap());
+    emitted.push_str(&runner.finish(&mut stack).unwrap());
+    assert_eq!(emitted, source);
+    assert!(stack.ctx().vault.is_empty());
+}
+
+#[test]
+fn json_exemptions_preserve_distinct_credential_literals() {
+    for (key, value) in [
+        ("api_key", "api_key9x7"),
+        ("password", "pydantic.SecretStr9x7"),
+        ("password", "std::string::String9x7"),
+        ("password", "%Db_Password%-suffix"),
+        ("password", "ab#cd#12"),
+        ("starting_access_token", "mysecretvalue"),
+    ] {
+        let source = format!(r#"{{"{key}":"{value}"}}"#);
+        assert_eq!(secret_values(&source), [value], "{source}");
+        let mut stack = output_stack();
+        let output = stack.run_output(&source).unwrap();
+        assert_complete_redactions(&stack, &source, &output, &[value]);
+    }
+}
