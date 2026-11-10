@@ -771,3 +771,72 @@ fn long_json_credential_keys_keep_complete_value_spans() {
         assert_unchanged_json(&format!(r#"{{"api_key":"YOUR_{key}"}}"#));
     }
 }
+
+#[test]
+fn json_processed_and_deferred_environment_references_are_not_credentials() {
+    for value in [
+        "%env(resolve:DB_PASSWORD)%",
+        "%env(string:DB_PASSWORD)%",
+        "%env(trim:file:DB_PASSWORD)%",
+        "%env(default:db.credential:DB_PASSWORD)%",
+        "$$DB_PASSWORD",
+        "$${DB_PASSWORD}",
+        r"\u0024\u0024{DB_PASSWORD}",
+    ] {
+        assert_unchanged_json(&format!(r#"{{"password":"{value}"}}"#));
+        let literal = format!("{value}-suffix");
+        let source = format!(r#"{{"password":"{literal}"}}"#);
+        assert_eq!(secret_values(&source), [literal.as_str()], "{source}");
+    }
+}
+
+#[test]
+fn json_secret_manager_pointers_are_not_credentials() {
+    for value in [
+        "op://Production/database/password",
+        "op://Production/database/credentials/password",
+        "OP://Production/database/password",
+        "op://Production/database/password?attribute=value",
+        "op://$APP_ENV/database/password",
+        "op://${APP_ENV}/database/password",
+        r"op:\/\/Production\/database\/password",
+    ] {
+        assert_unchanged_json(&format!(r#"{{"password":"{value}"}}"#));
+    }
+    for value in [
+        "op://Production/database",
+        "op://Production//password",
+        "op://Production/database/password/extra/segment",
+        "op://Production/database/password?attribute=value-suffix!",
+    ] {
+        let source = format!(r#"{{"password":"{value}"}}"#);
+        assert_eq!(secret_values(&source), [value], "{source}");
+    }
+}
+
+#[test]
+fn json_primitive_type_compositions_are_not_credentials() {
+    for value in [
+        "string|undefined",
+        "number[]",
+        "string|number",
+        "object|null",
+        "java.lang.String",
+        "java.lang.String[]",
+    ] {
+        assert_unchanged_json(&format!(r#"{{"password":"{value}"}}"#));
+        let literal = format!("{value}9x7");
+        let source = format!(r#"{{"password":"{literal}"}}"#);
+        assert_eq!(secret_values(&source), [literal.as_str()], "{source}");
+    }
+    for value in [
+        "java.lang",
+        "language",
+        "objectivity",
+        "numbered",
+        "undefined9x7",
+    ] {
+        let source = format!(r#"{{"password":"{value}"}}"#);
+        assert_eq!(secret_values(&source), [value], "{source}");
+    }
+}

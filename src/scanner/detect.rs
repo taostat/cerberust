@@ -1226,6 +1226,7 @@ fn json_type_argument_end(value: &str) -> Option<usize> {
 }
 
 fn is_json_type_words(value: &str) -> bool {
+    let value = value.strip_prefix("java.lang.").unwrap_or(value);
     let mut parts = value
         .split(|ch: char| !ch.is_ascii_alphabetic() && ch != '_')
         .filter(|part| !part.is_empty())
@@ -1242,6 +1243,9 @@ fn is_json_type_words(value: &str) -> bool {
                         | "any"
                         | "none"
                         | "null"
+                        | "undefined"
+                        | "number"
+                        | "object"
                         | "secretstr"
                         | "secretbytes"
                         | "anystr"
@@ -1260,6 +1264,7 @@ fn is_json_type_words(value: &str) -> bool {
 fn is_json_reference(value: &str) -> bool {
     static RE: OnceLock<Regex> = OnceLock::new();
     (value.starts_with("${") || value.starts_with("#{")) && value.ends_with('}')
+        || is_json_secret_reference(value)
         || RE
             .get_or_init(|| {
                 structured_rule(concat!(
@@ -1269,7 +1274,8 @@ fn is_json_reference(value: &str) -> bool {
                     r#"|(?:os\.getenv|os\.environ\.get)\((?:'[A-Za-z_][A-Za-z0-9_]*'|"[A-Za-z_][A-Za-z0-9_]*")\)"#,
                     r"|\$ENV\{[A-Za-z_][A-Za-z0-9_]*\}",
                     r"|\$\([A-Za-z_][A-Za-z0-9_.]*\)",
-                    r"|%env\([A-Za-z_][A-Za-z0-9_]*\)%",
+                    r"|\$\$(?:[A-Za-z_][A-Za-z0-9_]*|\{[A-Za-z_][A-Za-z0-9_]*\})",
+                    r"|%env\((?:[A-Za-z_][A-Za-z0-9_.-]*:)*[A-Za-z_][A-Za-z0-9_]*\)%",
                     r"|%[A-Za-z_][A-Za-z0-9_]*%",
                     r"|@Microsoft\.KeyVault\((?:SecretUri=https://[^\s()]+",
                     r"|VaultName=[A-Za-z0-9-]+;SecretName=[A-Za-z0-9-]+(?:;SecretVersion=[A-Za-z0-9-]+)?)\)",
@@ -1277,6 +1283,20 @@ fn is_json_reference(value: &str) -> bool {
                 ))
             })
             .is_match(value)
+}
+
+fn is_json_secret_reference(value: &str) -> bool {
+    static RE: OnceLock<Regex> = OnceLock::new();
+    RE.get_or_init(|| {
+        let part = concat!(
+            r"(?:[A-Za-z0-9_.-]|\$[A-Za-z_][A-Za-z0-9_]*|",
+            r"\$\{[A-Za-z_][A-Za-z0-9_]*\})+"
+        );
+        structured_rule(&format!(
+            r"^(?i:op)://{part}(?:/{part}){{2,3}}(?:\?(?:attribute|attr|ssh-format)=[A-Za-z0-9_-]+)?$"
+        ))
+    })
+    .is_match(value)
 }
 
 /// `next_token`, `nextPageToken`, `continuation_token`: opaque paging cursors.
