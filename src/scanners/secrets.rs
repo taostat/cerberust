@@ -10,8 +10,8 @@
 //! opposite restore default.
 
 use crate::scanner::detect::{
-    detect_secrets, expression_hold_floor, expression_match_start, resolve_overlaps,
-    secret_pattern_sources, seed_phrase_hold_floor, seed_phrase_match_start,
+    detect_secrets, expression_hold_floor, resolve_overlaps, secret_match_ranges,
+    secret_pattern_sources, seed_phrase_hold_floor,
 };
 use crate::scanner::{
     Direction, Disposition, RestorePolicy, ScanCtx, ScanResult, Scanner, ScannerId, Verdict,
@@ -110,11 +110,8 @@ impl Scanner for SecretScanner {
         seed_phrase_hold_floor(buf).min(expression_hold_floor(buf))
     }
 
-    fn stream_match_start(&self, buf: &[u8], split: usize) -> Option<usize> {
-        seed_phrase_match_start(buf, split)
-            .into_iter()
-            .chain(expression_match_start(buf, split))
-            .min()
+    fn stream_match_ranges(&self, buf: &[u8]) -> Vec<std::ops::Range<usize>> {
+        secret_match_ranges(buf)
     }
 }
 

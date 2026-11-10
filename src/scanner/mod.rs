@@ -170,10 +170,12 @@ pub trait Scanner: Send + Sync {
         buf.len()
     }
 
-    /// Start of a completed non-regex match crossing `split`, if any. The
-    /// runner moves its split back until all completed matches can flush whole.
-    fn stream_match_start(&self, _buf: &[u8], _split: usize) -> Option<usize> {
-        None
+    /// Byte ranges in the streaming buffer `buf` of completed matches a regex
+    /// cannot describe. The runner moves its flush point back so that none of
+    /// these ranges is flushed in pieces. Called once per buffer pass. Default:
+    /// no ranges.
+    fn stream_match_ranges(&self, _buf: &[u8]) -> Vec<std::ops::Range<usize>> {
+        Vec::new()
     }
 }
 
@@ -355,12 +357,20 @@ impl ScannerStack {
             .unwrap_or(buf.len())
     }
 
-    pub(crate) fn output_match_start(&self, buf: &[u8], split: usize) -> Option<usize> {
-        self.output
-            .iter()
-            .filter_map(|scanner| scanner.stream_match_start(buf, split))
-            .filter(|&start| start < split)
-            .min()
+    pub(crate) fn output_matches(&self, buf: &[u8]) -> OutputMatches {
+        let mut ranges = Vec::new();
+        for scanner in &self.output {
+            ranges.extend(scanner.stream_match_ranges(buf));
+        }
+        ranges.sort_unstable_by_key(|range| (range.start, range.end));
+        let mut merged: Vec<std::ops::Range<usize>> = Vec::new();
+        for range in ranges {
+            match merged.last_mut() {
+                Some(last) if range.start < last.end => last.end = last.end.max(range.end),
+                _ => merged.push(range),
+            }
+        }
+        OutputMatches { ranges: merged }
     }
 
     /// Whether any output scanner declares [`HoldBack::WholeStream`] — it cannot
@@ -450,6 +460,22 @@ impl ScannerStack {
             }
         }
         Ok(current)
+    }
+}
+
+pub(crate) struct OutputMatches {
+    /// Sorted, merged completed-match ranges.
+    ranges: Vec<std::ops::Range<usize>>,
+}
+
+impl OutputMatches {
+    /// Start of the completed match that `split` falls strictly inside, if any.
+    pub(crate) fn straddling_start(&self, split: usize) -> Option<usize> {
+        let before = self.ranges.partition_point(|range| range.start < split);
+        self.ranges[..before]
+            .last()
+            .filter(|range| split < range.end)
+            .map(|range| range.start)
     }
 }
 

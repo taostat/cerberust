@@ -839,16 +839,19 @@ pub fn seed_phrase_hold_floor(buf: &[u8]) -> usize {
     bip39::hold_floor(buf)
 }
 
-pub(crate) fn seed_phrase_match_start(buf: &[u8], split: usize) -> Option<usize> {
-    if split == 0 || split >= buf.len() {
-        return None;
-    }
-    let text = std::str::from_utf8(buf).ok()?;
+pub(crate) fn secret_match_ranges(buf: &[u8]) -> Vec<std::ops::Range<usize>> {
+    let Ok(text) = std::str::from_utf8(buf) else {
+        return Vec::new();
+    };
     bip39::detect(text)
-        .iter()
-        .filter(|span| span.start < split && split < span.end)
-        .map(|span| span.start)
-        .min()
+        .into_iter()
+        .map(|span| span.start..span.end)
+        .chain(
+            labelled_expression_bounds(text)
+                .into_iter()
+                .map(|(start, end, _)| start..end),
+        )
+        .collect()
 }
 
 pub(crate) fn expression_hold_floor(buf: &[u8]) -> usize {
@@ -861,18 +864,6 @@ pub(crate) fn expression_hold_floor(buf: &[u8]) -> usize {
         .map(|(start, _, _)| start)
         .min()
         .unwrap_or(buf.len())
-}
-
-pub(crate) fn expression_match_start(buf: &[u8], split: usize) -> Option<usize> {
-    if split == 0 || split >= buf.len() {
-        return None;
-    }
-    let text = std::str::from_utf8(buf).ok()?;
-    labelled_expression_bounds(text)
-        .into_iter()
-        .filter(|&(start, end, _)| start < split && split < end)
-        .map(|(start, _, _)| start)
-        .min()
 }
 
 fn labelled_expression_bounds(text: &str) -> Vec<(usize, usize, bool)> {
