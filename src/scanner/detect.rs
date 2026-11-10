@@ -923,13 +923,24 @@ fn labelled_expression_bounds(text: &str) -> Vec<(usize, usize, bool)> {
         };
         let limit = index.boundary(value.start(), text.len());
         let annotation = caps.name("colon").is_some();
-        let (end, unfinished) = index
-            .expression(text, value.start(), limit, annotation)
+        let limit = index.value_end(text, value.start(), limit, annotation, None);
+        let expression = index.expression(text, value.start(), limit, annotation);
+        let (end, unfinished) = expression
+            .as_ref()
             .map_or((limit, limit == text.len()), |(_, consumed)| {
                 (value.start() + consumed, false)
             });
         bounds.push((start, end, unfinished));
-        cursor = end;
+        cursor = if expression.is_none() && !unfinished {
+            value.start()
+                + text[value.start()..end]
+                    .split(|ch: char| ch.is_ascii_whitespace() || matches!(ch, '\'' | '"' | '&'))
+                    .next()
+                    .unwrap_or_default()
+                    .len()
+        } else {
+            end
+        };
     }
     bounds
 }
@@ -1277,6 +1288,7 @@ fn detect_labelled_secrets(text: &str, spans: &mut Vec<Span>) {
 struct AssignmentSyntax {
     closes: HashMap<usize, usize>,
     generic_closes: HashMap<usize, usize>,
+    suffixes: HashMap<usize, [usize; 2]>,
     boundaries: Vec<usize>,
     next_boundary: usize,
     // Find typed assignments once, without retrying the type look-ahead at
@@ -1291,6 +1303,7 @@ impl AssignmentSyntax {
         let typed_heads = typed_credential_heads(text, &generic_closes);
         Self {
             closes: expression_closes(text),
+            suffixes: expression_suffix_ends(text),
             boundaries: text
                 .bytes()
                 .enumerate()
@@ -1414,15 +1427,14 @@ impl AssignmentSyntax {
         if close > end {
             return None;
         }
-        let suffix = &text[close..end];
-        let complete = suffix.starts_with(char::is_whitespace)
-            || suffix
-                .split_ascii_whitespace()
-                .next()
-                .unwrap_or_default()
-                .trim_end_matches([',', ';'])
-                .bytes()
-                .all(|byte| byte == b')' || annotation && byte == b':');
+        let suffix_end = self
+            .suffixes
+            .get(&close)
+            .map_or(close, |ends| ends[usize::from(annotation)])
+            .min(end);
+        let complete = text[close..end].starts_with(char::is_whitespace)
+            || suffix_end == end
+            || text.as_bytes()[suffix_end].is_ascii_whitespace();
         complete.then_some((open + 1..close - start - 1, close - start))
     }
 
@@ -1449,6 +1461,29 @@ impl AssignmentSyntax {
         }
         (end <= limit).then_some(end)
     }
+}
+
+fn expression_suffix_ends(text: &str) -> HashMap<usize, [usize; 2]> {
+    let mut suffixes = HashMap::new();
+    let mut ends = [text.len(); 2];
+    let mut punctuation_end = text.len();
+    for (offset, byte) in text.bytes().enumerate().rev() {
+        match byte {
+            b')' => punctuation_end = offset,
+            b':' => {
+                ends[0] = offset;
+                punctuation_end = offset;
+            }
+            b',' | b';' => ends = [punctuation_end; 2],
+            _ => {
+                ends = [offset; 2];
+                punctuation_end = offset;
+                continue;
+            }
+        }
+        suffixes.insert(offset, ends);
+    }
+    suffixes
 }
 
 fn typed_credential_heads(text: &str, closes: &HashMap<usize, usize>) -> Vec<(usize, usize)> {

@@ -778,6 +778,38 @@ fn deeply_nested_assignments_preserve_literals_and_code_references() {
 }
 
 #[test]
+fn nested_expression_suffix_checks_scale_linearly() {
+    let text = format!(
+        "{}{}suffix\npassword=hunter2",
+        "token=f( ".repeat(50_000),
+        ")".repeat(50_000)
+    );
+    let start = std::time::Instant::now();
+    let spans = detect_secrets(&text);
+    let elapsed = start.elapsed();
+    assert_eq!(spans.len(), 1);
+    assert_eq!(&text[spans[0].start..spans[0].end], "hunter2");
+    assert!(elapsed.as_millis() < 3_000, "scan took {elapsed:?}");
+}
+
+#[test]
+fn expression_suffixes_preserve_literal_boundaries() {
+    for suffix in ["suffix", ",suffix", ",)suffix", ":suffix", ")suffix", ",)"] {
+        let value = format!("lookup(){suffix}");
+        assert_redacted(&format!("token={value}"), &value, "SECRET");
+    }
+    for suffix in ["", ")", ");", ",", "\u{2003}suffix"] {
+        assert_eq!(detect_secrets(&format!("token=lookup(){suffix}")), []);
+    }
+    for suffix in ["", "):", "):;", "): ordinary prose"] {
+        assert_eq!(
+            detect_secrets(&format!("password: Optional[str]{suffix}")),
+            []
+        );
+    }
+}
+
+#[test]
 fn angle_bracket_type_annotations_are_not_secrets() {
     for text in [
         "password: Option<String>",

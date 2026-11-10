@@ -643,3 +643,37 @@ fn untyped_chained_assignments_remain_redacted_across_chunks() {
         assert!(!emitted.contains(secret));
     }
 }
+
+#[test]
+fn nested_multiline_assignments_remain_redacted_across_chunks() {
+    let secret = "private-default-9x7k2m";
+    for assignment in [
+        "token = token\n=\n",
+        "token:Option<String> = token\n=\n",
+        "token:Option<String> = pwd\n=\n",
+    ] {
+        let text = format!("token=issue({assignment}{secret})\nfinished!\n");
+        let expected = normalize(&stack().run_output(&text).unwrap());
+        assert!(expected.contains("[REDACTED_SECRET_"));
+        assert!(!expected.contains(secret));
+        for chunk_len in 1..=8 {
+            assert_eq!(normalize(&stream(&text, chunk_len, secret)), expected);
+        }
+    }
+}
+
+#[test]
+fn multiline_expression_bounds_follow_literal_consumption() {
+    let secret = "private default 9x7k2m";
+    for text in [
+        format!("token = f(token\n=\ntoken:\tOption<String> = '{secret}' )\nfinished!\n"),
+        format!("token=f(password=os.getenv('ENV', password\n:\n'{secret}'))\nfinished!\n"),
+    ] {
+        let expected = normalize(&stack().run_output(&text).unwrap());
+        assert!(expected.contains("[REDACTED_SECRET_"));
+        assert!(!expected.contains(secret));
+        for chunk_len in 1..=8 {
+            assert_eq!(normalize(&stream(&text, chunk_len, secret)), expected);
+        }
+    }
+}
