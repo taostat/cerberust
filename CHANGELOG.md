@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.1] - 2026-11-10
+
+### Added
+
+- `ScannerStack::run_input_field()` and `ScannerStack::run_output_field()` scan
+  the value of a structured field (a JSON object value or tool-call argument)
+  with its field name available as the new `ScanCtx::field`. The secret scanner
+  treats the field name as the value's label, applying the same labelled-secret
+  rules it uses for `field: "value"` and `"field": "value"` in running text.
+
 ## [0.3.0] - 2026-11-09
 
 ### Added
@@ -222,7 +232,8 @@ Initial public release.
 - **Benchmark harness** (`benchmarks/`) — head-to-head precision/recall and
   throughput against Python's `llm-guard` over a shared labelled corpus.
 
-[Unreleased]: https://github.com/taostat/cerberust/compare/v0.3.0...HEAD
+[Unreleased]: https://github.com/taostat/cerberust/compare/v0.3.1...HEAD
+[0.3.1]: https://github.com/taostat/cerberust/compare/v0.3.0...v0.3.1
 [0.3.0]: https://github.com/taostat/cerberust/compare/v0.2.2...v0.3.0
 [0.2.2]: https://github.com/taostat/cerberust/compare/v0.2.1...v0.2.2
 [0.2.1]: https://github.com/taostat/cerberust/compare/v0.2.0...v0.2.1

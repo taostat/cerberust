@@ -184,6 +184,20 @@ because restore is enforced per placeholder and the restorer only owns PII types
 Running it on `Direction::Output` masks secrets the **model** emits — useful when a
 model might echo a credential it was shown or fabricate a plausible one.
 
+### Structured field values
+
+A caller that scans structured data one value at a time (JSON object values,
+tool-call arguments) loses the key that labels each value. Pass it with
+`ScannerStack::run_input_field(field, value)` or `run_output_field(field, value)`:
+the field name is set on `ScanCtx::field` for that run, and the secret scanner
+treats it as the value's label, the same way it reads `field: "value"` or
+`"field": "value"` in running text. The labelled-secret rules and their
+exemptions apply unchanged.
+
+```rust
+let redacted = stack.run_input_field("privateKey", value)?;
+```
+
 **Opt-in**, like every scanner — nothing runs until you add it to a `ScannerStack`.
 Ships in the default build (no extra cargo feature).
 

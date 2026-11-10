@@ -58,6 +58,12 @@ pub struct ScanCtx {
     /// (see [`ScannerStack::set_restore_encoder`]). The
     /// [`RestoreScanner`](crate::scanners::RestoreScanner) reads it.
     pub restore_encoder: RestoreEncoder,
+    /// The name of the structured field whose value is being scanned, such as
+    /// a JSON object key or a tool-call argument name, when the caller scans
+    /// field values one at a time. Set for a single run by
+    /// [`ScannerStack::run_input_field`] and [`ScannerStack::run_output_field`];
+    /// `None` otherwise. Scanners may read it as the value's label.
+    pub field: Option<String>,
 }
 
 impl ScanCtx {
@@ -69,6 +75,7 @@ impl ScanCtx {
             vault: Vault::new(),
             prompt: None,
             restore_encoder: RestoreEncoder::identity(),
+            field: None,
         }
     }
 
@@ -393,6 +400,25 @@ impl ScannerStack {
     /// # Errors
     /// Returns [`Blocked`] when a `Block` scanner rejects and `fail_fast` is set.
     pub fn run_input(&mut self, text: &str) -> Result<String, Blocked> {
+        self.ctx.field = None;
+        self.input_pass(text)
+    }
+
+    /// [`run_input`](Self::run_input) for the value of a structured field. The
+    /// field name is available to scanners as [`ScanCtx::field`] for this run
+    /// only; the secret scanner treats it as the value's label, as it treats
+    /// `field: "value"` in running text.
+    ///
+    /// # Errors
+    /// Returns [`Blocked`] when a `Block` scanner rejects and `fail_fast` is set.
+    pub fn run_input_field(&mut self, field: &str, text: &str) -> Result<String, Blocked> {
+        self.ctx.field = Some(field.to_owned());
+        let result = self.input_pass(text);
+        self.ctx.field = None;
+        result
+    }
+
+    fn input_pass(&mut self, text: &str) -> Result<String, Blocked> {
         self.ctx.prompt = self.retain_prompt.then(|| text.to_owned());
         let mut current = text.to_owned();
         for scanner in &self.input {
@@ -433,6 +459,24 @@ impl ScannerStack {
     /// # Errors
     /// Returns [`Blocked`] when a `Block` scanner rejects and `fail_fast` is set.
     pub fn run_output(&mut self, text: &str) -> Result<String, Blocked> {
+        self.ctx.field = None;
+        self.output_pass(text)
+    }
+
+    /// [`run_output`](Self::run_output) for the value of a structured field,
+    /// such as a tool-call argument in a model response. The field name is
+    /// available to scanners as [`ScanCtx::field`] for this run only.
+    ///
+    /// # Errors
+    /// Returns [`Blocked`] when a `Block` scanner rejects and `fail_fast` is set.
+    pub fn run_output_field(&mut self, field: &str, text: &str) -> Result<String, Blocked> {
+        self.ctx.field = Some(field.to_owned());
+        let result = self.output_pass(text);
+        self.ctx.field = None;
+        result
+    }
+
+    fn output_pass(&mut self, text: &str) -> Result<String, Blocked> {
         let mut current = text.to_owned();
         for scanner in self.output.iter().rev() {
             let before = vault_snapshot(&self.ctx.vault);

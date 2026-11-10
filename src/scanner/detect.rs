@@ -954,6 +954,71 @@ fn labelled_expression_bounds(text: &str) -> Vec<(usize, usize, bool)> {
     bounds
 }
 
+/// Detect credentials in `text`, the value of the structured field `field` (a
+/// JSON object key or tool-call argument name). The field name is applied as
+/// the value's label: the result is what [`detect_secrets`] finds in `text`
+/// plus what it finds within the value of `"field": "text"` and
+/// `field: "text"`. Span offsets are into `text`.
+#[must_use]
+pub fn detect_field_secrets(field: &str, text: &str) -> Vec<Span> {
+    let mut spans = detect_secrets(text);
+    if field.is_empty() {
+        return spans;
+    }
+    let value = QuotedValue::new(text);
+    let quoted_field = QuotedValue::new(field).escaped;
+    for prefix in [format!("\"{quoted_field}\": \""), format!("{field}: \"")] {
+        let labelled = format!("{prefix}{}\"", value.escaped);
+        for span in detect_secrets(&labelled) {
+            if let Some((start, end)) = value.original_range(
+                span.start.saturating_sub(prefix.len()),
+                span.end.saturating_sub(prefix.len()),
+            ) {
+                spans.push(Span::new(start, end, &span.ty, span.confidence));
+            }
+        }
+    }
+    spans
+}
+
+/// A value escaped for a double-quoted string, with a map from each escaped
+/// byte back to the original character it came from.
+struct QuotedValue {
+    escaped: String,
+    /// For each escaped byte, the original character's byte range.
+    origin: Vec<(usize, usize)>,
+}
+
+impl QuotedValue {
+    fn new(text: &str) -> Self {
+        let mut escaped = String::with_capacity(text.len());
+        let mut origin = Vec::with_capacity(text.len());
+        for (start, ch) in text.char_indices() {
+            let before = escaped.len();
+            match ch {
+                '"' => escaped.push_str("\\\""),
+                '\\' => escaped.push_str("\\\\"),
+                '\n' => escaped.push_str("\\n"),
+                '\r' => escaped.push_str("\\r"),
+                _ => escaped.push(ch),
+            }
+            let range = (start, start + ch.len_utf8());
+            origin.extend(std::iter::repeat_n(range, escaped.len() - before));
+        }
+        Self { escaped, origin }
+    }
+
+    /// The original byte range covered by escaped bytes `start..end`, clipped
+    /// to the value. `None` when nothing of the value is covered.
+    fn original_range(&self, start: usize, end: usize) -> Option<(usize, usize)> {
+        let end = end.min(self.origin.len());
+        if start >= end {
+            return None;
+        }
+        Some((self.origin[start].0, self.origin[end - 1].1))
+    }
+}
+
 /// Detect credentials: known-vendor patterns (the crate's own plus the ported
 /// gitleaks rules), BIP39 seed phrases, labelled `key=value` secrets,
 /// URL-embedded passwords, and a high-entropy backstop over bare tokens.
