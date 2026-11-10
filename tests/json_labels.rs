@@ -516,3 +516,124 @@ fn json_powershell_environment_references_are_not_credentials() {
         assert_unchanged_json(&format!(r#"{{"password":"{value}"}}"#));
     }
 }
+
+#[test]
+fn json_compound_credential_placeholders_are_not_credentials() {
+    for (key, value) in [
+        ("client_secret", "YOUR_CLIENT_SECRET"),
+        ("access_token", "YOUR_ACCESS_TOKEN_HERE"),
+        ("db_password", "REPLACE_WITH_YOUR_DB_PASSWORD"),
+        ("api_key", "INSERT_ACCESS_TOKEN_HERE"),
+        ("api_key", "your-client-secret-here"),
+    ] {
+        assert_unchanged_json(&format!(r#"{{"{key}":"{value}"}}"#));
+    }
+}
+
+#[test]
+fn json_environment_accessors_are_not_credentials() {
+    for value in [
+        "os.environ['DB_PASSWORD']",
+        r#"os.getenv(\"DB_PASSWORD\")"#,
+        "os.environ.get('DB_PASSWORD')",
+        "process.env['DB_PASSWORD']",
+        r#"process.env[\"DB_PASSWORD\"]"#,
+        "env.DB_PASSWORD",
+        "$ENV{DB_PASSWORD}",
+        "%env(DB_PASSWORD)%",
+    ] {
+        assert_unchanged_json(&format!(r#"{{"password":"{value}"}}"#));
+    }
+}
+
+#[test]
+fn json_invalid_escapes_preserve_decoded_whitespace_exemptions() {
+    for value in [
+        r"Enter\u0020your\u0020password\u",
+        r"Please\nenter\q",
+        r"Please\tenter\ud800",
+        r"Please\qenter\npassword",
+        r"Please\nenter\",
+    ] {
+        let source = format!(r#"{{"password":"{value}"#);
+        assert_unchanged_json(&source);
+        assert_unchanged_json(&format!(r#"{source}"}}"#));
+    }
+}
+
+#[test]
+fn json_generic_and_secret_types_are_not_credentials() {
+    for value in [
+        "SecretBytes",
+        "typing.AnyStr",
+        "pydantic.SecretBytes",
+        "Literal['redacted']",
+        r#"typing.Literal[\"redacted\",\"hidden\"]"#,
+        "typing_extensions.Annotated[str,Field(repr=False)]",
+        "Optional[Credential]",
+        "Option<Credential>",
+        "List[Literal['redacted']]",
+    ] {
+        assert_unchanged_json(&format!(r#"{{"password":"{value}"}}"#));
+    }
+}
+
+#[test]
+fn json_named_partial_masks_are_not_credentials() {
+    for value in [
+        "[redacted]1234",
+        "abcd[REDACTED]",
+        "<masked>1234",
+        r"\u005bredacted\u005d1234",
+    ] {
+        assert_unchanged_json(&format!(r#"{{"password":"{value}"}}"#));
+    }
+}
+
+#[test]
+fn json_validation_messages_are_not_credentials() {
+    for source in [
+        r#"{"errors":{"password":"invalid"}}"#,
+        r#"{"password":"required","confirm_password":"mismatch"}"#,
+        r#"{"password":"incorrect"}"#,
+    ] {
+        assert_unchanged_json(source);
+    }
+}
+
+#[test]
+fn json_localized_display_questions_are_not_credentials() {
+    for source in [
+        r#"{"i18n":{"forgot_password":"Passwort?","reset_password":"Zurücksetzen"}}"#,
+        r#"{"password":"Password?"}"#,
+        r#"{"password":"パスワード？"}"#,
+    ] {
+        assert_unchanged_json(source);
+    }
+}
+
+#[test]
+fn json_exemptions_require_complete_placeholders_references_and_types() {
+    for value in [
+        "YOUR_CLIENT_SECRET9x7",
+        "YOUR_ACCESS_TOKEN_HERE9x7",
+        "os.environ['DB_PASSWORD']-suffix",
+        "os.getenv('DB_PASSWORD','mysecretvalue')",
+        "process.env['DB_PASSWORD']-suffix",
+        "$ENV{DB_PASSWORD}-suffix",
+        "%env(DB_PASSWORD)%-suffix",
+        "Literal['redacted']9x7",
+        "Option<Credential>9x7",
+        "Optional[Credential]9x7",
+        "SecretBytes9x7",
+        "my[part]secret123",
+        "invalid9x7",
+        "Passwort?9x7",
+    ] {
+        let source = format!(r#"{{"password":"{value}"}}"#);
+        assert_eq!(secret_values(&source), [value], "{source}");
+        let mut stack = output_stack();
+        let output = stack.run_output(&source).unwrap();
+        assert_complete_redactions(&stack, &source, &output, &[value]);
+    }
+}

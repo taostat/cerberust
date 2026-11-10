@@ -1074,7 +1074,7 @@ fn detect_json_labelled_secrets(text: &str, spans: &mut Vec<Span>) {
 
 fn is_json_credential(key: &str, value: &str) -> bool {
     let key = key.to_ascii_lowercase();
-    let value = decode_json_string(value).unwrap_or(Cow::Borrowed(value));
+    let value = decode_json_string(value);
     if is_pagination_token_key(&key) || key == "pwd" && is_directory_path(&value) {
         return false;
     }
@@ -1089,9 +1089,9 @@ fn is_json_credential(key: &str, value: &str) -> bool {
 }
 
 /// Decode only for classification; reported spans still cover the source bytes.
-fn decode_json_string(value: &str) -> Option<Cow<'_, str>> {
+fn decode_json_string(value: &str) -> Cow<'_, str> {
     if !value.contains('\\') {
-        return Some(Cow::Borrowed(value));
+        return Cow::Borrowed(value);
     }
     let mut decoded = String::with_capacity(value.len());
     let mut chars = value.chars();
@@ -1100,33 +1100,43 @@ fn decode_json_string(value: &str) -> Option<Cow<'_, str>> {
             decoded.push(ch);
             continue;
         }
-        decoded.push(match chars.next()? {
-            '"' => '"',
-            '\\' => '\\',
-            '/' => '/',
-            'b' => '\u{0008}',
-            'f' => '\u{000c}',
-            'n' => '\n',
-            'r' => '\r',
-            't' => '\t',
-            'u' => {
-                let mut code = json_hex_quad(&mut chars)?;
-                if (0xd800..=0xdbff).contains(&code) {
-                    if chars.next()? != '\\' || chars.next()? != 'u' {
-                        return None;
-                    }
-                    let low = json_hex_quad(&mut chars)?;
-                    if !(0xdc00..=0xdfff).contains(&low) {
-                        return None;
-                    }
-                    code = 0x10000 + ((code - 0xd800) << 10) + low - 0xdc00;
-                }
-                char::from_u32(code)?
-            }
-            _ => return None,
-        });
+        let mut escaped = chars.clone();
+        if let Some(decoded_char) = decode_json_escape(&mut escaped) {
+            decoded.push(decoded_char);
+            chars = escaped;
+        } else {
+            decoded.push('\\');
+        }
     }
-    Some(Cow::Owned(decoded))
+    Cow::Owned(decoded)
+}
+
+fn decode_json_escape(chars: &mut std::str::Chars<'_>) -> Option<char> {
+    Some(match chars.next()? {
+        '"' => '"',
+        '\\' => '\\',
+        '/' => '/',
+        'b' => '\u{0008}',
+        'f' => '\u{000c}',
+        'n' => '\n',
+        'r' => '\r',
+        't' => '\t',
+        'u' => {
+            let mut code = json_hex_quad(chars)?;
+            if (0xd800..=0xdbff).contains(&code) {
+                if chars.next()? != '\\' || chars.next()? != 'u' {
+                    return None;
+                }
+                let low = json_hex_quad(chars)?;
+                if !(0xdc00..=0xdfff).contains(&low) {
+                    return None;
+                }
+                code = 0x10000 + ((code - 0xd800) << 10) + low - 0xdc00;
+            }
+            char::from_u32(code)?
+        }
+        _ => return None,
+    })
 }
 
 fn json_hex_quad(chars: &mut std::str::Chars<'_>) -> Option<u32> {
@@ -1142,25 +1152,54 @@ fn is_directory_path(value: &str) -> bool {
 }
 
 fn is_json_type_hint(value: &str) -> bool {
+    if value
+        .bytes()
+        .all(|byte| byte.is_ascii_alphabetic() || b"_.<>[],|?:&".contains(&byte))
+        && is_json_type_words(value)
+    {
+        return true;
+    }
+    let Some(open) = value.find(['[', '<']) else {
+        return false;
+    };
+    let head = &value[..open];
+    if !head
+        .bytes()
+        .all(|byte| byte.is_ascii_alphabetic() || b"_.:".contains(&byte))
+        || !is_json_type_words(head)
+    {
+        return false;
+    }
+    let closes = if value.as_bytes()[open] == b'<' {
+        generic_closes(value)
+    } else {
+        expression_closes(value)
+    };
+    closes.get(&open) == Some(&value.len())
+}
+
+fn is_json_type_words(value: &str) -> bool {
     let mut parts = value
         .split(|ch: char| !ch.is_ascii_alphabetic() && ch != '_')
         .filter(|part| !part.is_empty())
         .peekable();
-    value
-        .bytes()
-        .all(|byte| byte.is_ascii_alphabetic() || b"_.<>[],|?:&".contains(&byte))
-        && parts.peek().is_some()
+    parts.peek().is_some()
         && parts.all(|part| {
             is_type_annotation(part)
                 || matches!(
                     part.to_ascii_lowercase().as_str(),
                     "typing"
+                        | "typing_extensions"
                         | "builtins"
                         | "union"
                         | "any"
                         | "none"
                         | "null"
                         | "secretstr"
+                        | "secretbytes"
+                        | "anystr"
+                        | "literal"
+                        | "annotated"
                         | "std"
                         | "pydantic"
                         | "array"
@@ -1178,6 +1217,11 @@ fn is_json_reference(value: &str) -> bool {
             .get_or_init(|| {
                 structured_rule(concat!(
                     r"^(?:(?:process\.env\.|\$?(?i:env):)[A-Za-z_][A-Za-z0-9_]*",
+                    r"|env\.[A-Za-z_][A-Za-z0-9_]*",
+                    r#"|(?:os\.environ|process\.env)\[(?:'[A-Za-z_][A-Za-z0-9_]*'|"[A-Za-z_][A-Za-z0-9_]*")\]"#,
+                    r#"|(?:os\.getenv|os\.environ\.get)\((?:'[A-Za-z_][A-Za-z0-9_]*'|"[A-Za-z_][A-Za-z0-9_]*")\)"#,
+                    r"|\$ENV\{[A-Za-z_][A-Za-z0-9_]*\}",
+                    r"|%env\([A-Za-z_][A-Za-z0-9_]*\)%",
                     r"|%[A-Za-z_][A-Za-z0-9_]*%",
                     r"|#/[^\s]+)$"
                 ))
@@ -1208,7 +1252,7 @@ fn is_pagination_token_key(key: &str) -> bool {
 
 /// Schema and type words, masked values and bracketed placeholders.
 fn is_json_placeholder_value(value: &str) -> bool {
-    const WORDS: [&str; 23] = [
+    const WORDS: [&str; 27] = [
         "string",
         "secret",
         "bearer",
@@ -1225,7 +1269,11 @@ fn is_json_placeholder_value(value: &str) -> bool {
         "object",
         "secretstr",
         "undefined",
+        "invalid",
+        "incorrect",
+        "mismatch",
         "passwort",
+        "zurücksetzen",
         "mot_de_passe",
         "contraseña",
         "senha",
@@ -1242,8 +1290,22 @@ fn is_json_placeholder_value(value: &str) -> bool {
         .strip_prefix("replace_with_")
         .or_else(|| template.strip_prefix("replace-with-"))
         .unwrap_or(template);
-    if WORDS.contains(&lower.trim_end_matches([':', '*']))
-        || template.len() != lower.len() && is_non_secret_assignment_value(template, true, false)
+    let name = template
+        .strip_prefix("your_")
+        .or_else(|| template.strip_prefix("your-"))
+        .or_else(|| template.strip_prefix("insert_"))
+        .or_else(|| template.strip_prefix("insert-"))
+        .unwrap_or(template);
+    if WORDS.contains(&lower.trim_end_matches([':', '*', '?', '？']))
+        || name.len() != lower.len()
+            && (is_non_secret_assignment_value(template, true, false)
+                || is_json_placeholder_name(name))
+    {
+        return true;
+    }
+    if ["[redacted]", "<redacted>", "[masked]", "<masked>"]
+        .iter()
+        .any(|mask| lower.contains(mask))
     {
         return true;
     }
@@ -1267,6 +1329,17 @@ fn is_json_placeholder_value(value: &str) -> bool {
             | (Some(b'{'), Some(b'}'))
             | (Some(b'('), Some(b')'))
     )
+}
+
+fn is_json_placeholder_name(value: &str) -> bool {
+    static RE: OnceLock<Regex> = OnceLock::new();
+    RE.get_or_init(|| {
+        structured_rule(concat!(
+            r"^[a-z0-9_.-]{0,40}?(?:password|passwd|pwd|secret|",
+            r"api[_-]?key|access[_-]?key|token)$"
+        ))
+    })
+    .is_match(value)
 }
 
 /// Each validated rule's keywords, in rule order, for the shared keyword pass
