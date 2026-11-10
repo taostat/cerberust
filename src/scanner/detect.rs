@@ -966,8 +966,8 @@ pub fn detect_field_secrets(field: &str, text: &str) -> Vec<Span> {
         return spans;
     }
     let value = QuotedValue::new(text);
-    let field = QuotedValue::new(field).escaped;
-    for prefix in [format!("\"{field}\": \""), format!("{field}: \"")] {
+    let quoted_field = QuotedValue::new(field).escaped;
+    for prefix in [format!("\"{quoted_field}\": \""), format!("{field}: \"")] {
         let labelled = format!("{prefix}{}\"", value.escaped);
         for span in detect_secrets(&labelled) {
             if let Some((start, end)) = value.original_range(

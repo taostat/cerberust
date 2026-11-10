@@ -123,13 +123,44 @@ fn field_names_with_quotes_are_escaped() {
     assert!(spans.iter().all(|span| span.end <= key.len()));
 }
 
+#[test]
+fn unquoted_field_labels_preserve_whitespace() {
+    let value = "hunter2hunter2";
+    for field in ["\npassword", "password\n", "password\r\n"] {
+        let prefix = format!("{field}: \"");
+        let labelled = format!("{prefix}{value}\"");
+        assert!(detect_secrets(&labelled)
+            .iter()
+            .any(|span| { span.start == prefix.len() && span.end == prefix.len() + value.len() }));
+
+        for direction in [Direction::Input, Direction::Output] {
+            let scanner = SecretScanner::new().with_direction(direction);
+            let mut stack = ScannerStack::new(vec![Box::new(scanner)], false);
+            let redacted = match direction {
+                Direction::Input => stack.run_input_field(field, value),
+                Direction::Output => stack.run_output_field(field, value),
+            }
+            .unwrap();
+            assert_eq!(
+                stack.ctx().vault.original_for(&redacted),
+                Some(value),
+                "{field:?}, {direction:?}: {redacted}"
+            );
+            assert!(stack.ctx().field.is_none());
+        }
+    }
+}
+
 proptest! {
     #[test]
     fn field_spans_stay_on_value_char_boundaries(
-        field in "[a-zA-Z_\"\\\\ ]{0,12}",
+        field in prop::sample::select(vec!["password", "api_key", "token"]),
         text in "\\PC{0,48}",
     ) {
-        for span in detect_field_secrets(&field, &text) {
+        let text = format!("pa\"ss\\wo\nrd-é-91x7Qz{text}");
+        let spans = detect_field_secrets(field, &text);
+        prop_assert!(spans.iter().any(|span| span.start == 0 && span.end == text.len()));
+        for span in spans {
             prop_assert!(span.start < span.end && span.end <= text.len());
             prop_assert!(text.is_char_boundary(span.start));
             prop_assert!(text.is_char_boundary(span.end));
@@ -139,7 +170,11 @@ proptest! {
     #[test]
     fn field_scan_finds_everything_an_unlabelled_scan_finds(
         field in "[a-zA-Z_]{0,12}",
-        text in "\\PC{0,48}",
+        text in prop_oneof![
+            "\\PC{0,48}",
+            Just("aB3cD4eF5gH6iJ7kL8mN9oP0qR1sT2uV".to_owned()),
+            Just("AKIAIOSFODNN7EXAMPLE".to_owned()),
+        ],
     ) {
         let labelled = detect_field_secrets(&field, &text);
         for span in detect_secrets(&text) {
