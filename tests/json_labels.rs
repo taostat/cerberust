@@ -735,3 +735,39 @@ fn json_managed_secret_and_expression_references_are_not_credentials() {
         assert_eq!(secret_values(&source), [literal.as_str()], "{source}");
     }
 }
+
+#[test]
+fn json_environment_macro_references_are_not_credentials() {
+    for value in ["$(DB_PASSWORD)", "$(db.password)", r"\u0024(DB_PASSWORD)"] {
+        assert_unchanged_json(&format!(r#"{{"password":"{value}"}}"#));
+        let literal = format!("{value}-suffix");
+        let source = format!(r#"{{"password":"{literal}"}}"#);
+        assert_eq!(secret_values(&source), [literal.as_str()], "{source}");
+    }
+}
+
+#[test]
+fn long_json_credential_keys_keep_complete_value_spans() {
+    for key in [
+        "spring.datasource.hikari.data-source-properties.password",
+        "application.production.authentication.service.api_key",
+    ] {
+        let value = r#"my\"secret\\value9"#;
+        let source = format!(r#"前 {{"{key}" : "{value}"}} 後 "#);
+        assert_eq!(secret_values(&source), [value], "{source}");
+        let mut stack = output_stack();
+        let mut runner = StreamOutput::new(&stack);
+        let mut emitted = String::new();
+        for ch in source.chars() {
+            emitted.push_str(
+                &runner
+                    .push(&mut stack, ch.encode_utf8(&mut [0; 4]))
+                    .unwrap(),
+            );
+        }
+        emitted.push_str(&runner.finish(&mut stack).unwrap());
+        assert_complete_redactions(&stack, &source, &emitted, &[value]);
+        assert_unchanged_json(&format!(r#"{{"{key}_hint":"mysecretvalue"}}"#));
+        assert_unchanged_json(&format!(r#"{{"api_key":"YOUR_{key}"}}"#));
+    }
+}

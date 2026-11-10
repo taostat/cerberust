@@ -734,7 +734,7 @@ const URL_CREDENTIAL_PATTERN: &str = r"[a-z][a-z0-9+.\-]*://[^\s:/@]+:([^\s/@]+)
 /// A double-quoted object key that ends in a credential label, followed by a
 /// double-quoted string value: `"password": "..."`, `"db_password":"..."`.
 const JSON_CREDENTIAL_PATTERN: &str = concat!(
-    r#""(?P<key>[A-Za-z0-9_.-]{0,40}?"#,
+    r#""(?P<key>[A-Za-z0-9_.-]*?"#,
     r"(?i:password|passwd|pwd|secret|api[_-]?key|apikey|access[_-]?key|token))",
     r#""[ \t\r\n]*:[ \t\r\n]*"(?P<value>(?:\\\S|[^"\\\s])*(?:\\$)?)(?:"|$)"#,
 );
@@ -1268,6 +1268,7 @@ fn is_json_reference(value: &str) -> bool {
                     r#"|(?:os\.environ|process\.env)\[(?:'[A-Za-z_][A-Za-z0-9_]*'|"[A-Za-z_][A-Za-z0-9_]*")\]"#,
                     r#"|(?:os\.getenv|os\.environ\.get)\((?:'[A-Za-z_][A-Za-z0-9_]*'|"[A-Za-z_][A-Za-z0-9_]*")\)"#,
                     r"|\$ENV\{[A-Za-z_][A-Za-z0-9_]*\}",
+                    r"|\$\([A-Za-z_][A-Za-z0-9_.]*\)",
                     r"|%env\([A-Za-z_][A-Za-z0-9_]*\)%",
                     r"|%[A-Za-z_][A-Za-z0-9_]*%",
                     r"|@Microsoft\.KeyVault\((?:SecretUri=https://[^\s()]+",
@@ -1391,7 +1392,7 @@ fn is_json_placeholder_name(value: &str) -> bool {
     static RE: OnceLock<Regex> = OnceLock::new();
     RE.get_or_init(|| {
         structured_rule(concat!(
-            r"^[a-z0-9_.-]{0,40}?(?:password|passwd|pwd|secret|",
+            r"^[a-z0-9_.-]*?(?:password|passwd|pwd|secret|",
             r"api[_-]?key|access[_-]?key|token)$"
         ))
     })
