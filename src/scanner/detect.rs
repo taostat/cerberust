@@ -1117,7 +1117,8 @@ impl QuotedValue {
 #[must_use]
 pub fn detect_secrets(text: &str) -> Vec<Span> {
     let mut validated_hits = vec![false; ADDITIONAL_SECRET_PATTERNS.len()];
-    let mut spans = gitleaks::detect(text, &mut validated_hits);
+    let mut labelled_hit = false;
+    let mut spans = gitleaks::detect(text, &mut validated_hits, &mut labelled_hit);
     spans.extend(bip39::detect(text));
     for rule in secret_rules() {
         for m in rule.re.find_iter(text) {
@@ -1125,7 +1126,9 @@ pub fn detect_secrets(text: &str) -> Vec<Span> {
         }
     }
     detect_validated_secrets(text, &validated_hits, &mut spans);
-    detect_labelled_secrets(text, &mut spans);
+    if labelled_hit {
+        detect_labelled_secrets(text, &mut spans);
+    }
     detect_json_labelled_secrets(text, &mut spans);
     for caps in url_credential_rule().captures_iter(text) {
         if let Some(v) = caps.get(1) {
@@ -1233,6 +1236,26 @@ fn is_placeholder_shape(value: &str) -> bool {
     static RE: OnceLock<Regex> = OnceLock::new();
     RE.get_or_init(|| structured_rule(r"^(?:<[A-Za-z _-]+>|(?:0[xX])?YOUR_[A-Z_]+)$"))
         .is_match(value)
+}
+
+/// Literals of which every [`CREDENTIAL_LABEL`] match contains at least one,
+/// for the shared keyword pass in [`gitleaks::detect`]. The labelled rule runs
+/// only when one occurs.
+pub(super) fn labelled_secret_keywords() -> [&'static str; 12] {
+    [
+        "password",
+        "passwd",
+        "pwd",
+        "passphrase",
+        "credential",
+        "secret",
+        "private",
+        "signing",
+        "encryption",
+        "api",
+        "access",
+        "token",
+    ]
 }
 
 /// Start of the identifier that ends in the label matched at `head_start`:
@@ -2722,7 +2745,7 @@ mod tests {
             format!("ſolana={}", bs58::encode([7; 64]).into_string()),
         ] {
             let mut hits = vec![false; ADDITIONAL_SECRET_PATTERNS.len()];
-            let _ = gitleaks::detect(&text, &mut hits);
+            let _ = gitleaks::detect(&text, &mut hits, &mut false);
             let mut expected = Vec::new();
             detect_validated_secrets(&text, &vec![true; hits.len()], &mut expected);
             assert!(
@@ -2754,10 +2777,34 @@ mod tests {
                 let sample = strategy.new_tree(&mut runner).unwrap().current();
                 assert!(rule.re.is_match(&sample), "invalid sample: {sample:?}");
                 let mut hits = vec![false; ADDITIONAL_SECRET_PATTERNS.len()];
-                let _ = gitleaks::detect(&sample, &mut hits);
+                let _ = gitleaks::detect(&sample, &mut hits, &mut false);
                 assert!(hits[index], "rule {} missed sample {sample:?}", rule.ty);
             }
         }
+    }
+
+    #[test]
+    fn every_credential_label_sample_reaches_the_labelled_keyword_gate() {
+        use proptest::strategy::{Strategy, ValueTree};
+        use proptest::test_runner::{Config, RngAlgorithm, TestRng, TestRunner};
+
+        let mut runner = TestRunner::new_with_rng(
+            Config::default(),
+            TestRng::from_seed(RngAlgorithm::ChaCha, &[13; 32]),
+        );
+        let label = Regex::new(CREDENTIAL_LABEL).unwrap();
+        let strategy =
+            proptest::string::string_regex(&CREDENTIAL_LABEL.replace(r"\b", "")).unwrap();
+        for _ in 0..512 {
+            let sample = strategy.new_tree(&mut runner).unwrap().current();
+            assert!(label.is_match(&sample), "invalid sample: {sample:?}");
+            let mut labelled = false;
+            let _ = gitleaks::detect(&sample, &mut [], &mut labelled);
+            assert!(labelled, "labelled gate missed {sample:?}");
+        }
+        let mut labelled = false;
+        let _ = gitleaks::detect("safe! safe! nothing here", &mut [], &mut labelled);
+        assert!(!labelled);
     }
 
     #[test]
