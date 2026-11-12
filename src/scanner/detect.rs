@@ -793,8 +793,8 @@ const CREDENTIAL_VALUE: &str = concat!(
     r#"|(?P<bare>[a-z_][a-z0-9_.:]*[ \t]*[\[(<]|[^\s"'&]+))"#,
 );
 const CREDENTIAL_OBJECT_HEAD: &str = concat!(
-    r#"\{\s*(?:[A-Za-z_$][A-Za-z0-9_$]*|"(?:\\[^\r\n]|[^"\\\r\n])*""#,
-    r"|'(?:\\[^\r\n]|[^'\\\r\n])*')\s*:"
+    r#"\{\s*(?:[A-Za-z_$][A-Za-z0-9_$]*\s*[:,]|(?:"(?:\\[^\r\n]|[^"\\\r\n])*""#,
+    r"|'(?:\\[^\r\n]|[^'\\\r\n])*')\s*:)"
 );
 const URL_CREDENTIAL_PATTERN: &str = r"[a-z][a-z0-9+.\-]*://[^\s:/@]+:([^\s/@]+)@";
 /// A double-quoted object key that ends in a credential label, followed by a

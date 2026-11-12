@@ -286,6 +286,26 @@ fn credential_objects_preserve_properties_and_scan_nested_values() {
 }
 
 #[test]
+fn credential_objects_preserve_shorthand_properties() {
+    for label in ["credentials", "app_credentials", "credential"] {
+        for (object, expected) in [
+            ("{accessKeyId, secretAccessKey}", vec![]),
+            ("{username,password}", vec![]),
+            ("{username, password: 'hunter2'}", vec!["hunter2"]),
+            ("{username,db_password: 'hunter2'}", vec!["hunter2"]),
+        ] {
+            let text = format!("{label} = {object}\nfinished!\n");
+            assert_eq!(secret_values(&text), expected, "{text}");
+            assert_streamed_values(&text, &expected);
+        }
+    }
+    let value = "{username,password}";
+    let text = format!("credentials = '{value}'\nfinished!\n");
+    assert_eq!(secret_values(&text), [value]);
+    assert_streamed_values(&text, &[value]);
+}
+
+#[test]
 fn tokenizer_special_tokens_are_not_credentials() {
     for (label, value) in [
         ("pad_token", "<|endoftext|>"),
