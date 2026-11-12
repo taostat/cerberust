@@ -1,5 +1,5 @@
-//! Structured PII patterns use ASCII word boundaries: non-ASCII punctuation and
-//! letters next to a value are boundaries, ASCII letters and digits are not.
+//! Structured PII boundaries stay DFA-compatible while preserving digit and
+//! punctuation spans. Non-ASCII letters may now delimit a value.
 
 #![allow(
     clippy::unwrap_used,
@@ -43,14 +43,22 @@ fn values_next_to_non_ascii_punctuation_keep_their_spans() {
 }
 
 #[test]
-fn non_ascii_letters_directly_next_to_digits_are_boundaries() {
-    for (ty, value) in [
-        ("CREDIT_CARD", "4111 1111 1111 1111"),
-        ("US_SSN", "536-22-1475"),
-        ("IP_ADDRESS", "192.168.1.20"),
-    ] {
-        for text in [format!("\u{e9}{value}"), format!("{value}\u{e9}")] {
-            assert_eq!(found(&text, ty), [value], "{ty} in {text:?}");
+fn non_ascii_letters_directly_next_to_values_are_boundaries() {
+    for (ty, value) in VALUES.into_iter().filter(|(ty, _)| *ty != "EMAIL") {
+        for letter in ['é', '漢'] {
+            for text in [format!("{letter}{value}"), format!("{value}{letter}")] {
+                assert_eq!(found(&text, ty), [value], "{ty} in {text:?}");
+            }
+        }
+    }
+}
+
+#[test]
+fn neighboring_values_can_share_boundary_context() {
+    for (ty, value) in VALUES.into_iter().filter(|(ty, _)| *ty != "EMAIL") {
+        for separator in ['—', 'é'] {
+            let text = format!("{value}{separator}{value}");
+            assert_eq!(found(&text, ty), [value, value], "{ty} in {text:?}");
         }
     }
 }
@@ -76,6 +84,45 @@ fn ascii_letters_and_digits_next_to_values_are_still_not_boundaries() {
                 !found(&text, ty).contains(&value.to_owned()),
                 "{ty} in {text:?}"
             );
+        }
+    }
+}
+
+#[test]
+fn unicode_digits_keep_existing_value_spans() {
+    for (ty, value) in [
+        ("PHONE", "٤١٥-٥٥٥-٠١٣٢"),
+        ("PHONE", "415-555-013２"),
+        ("CREDIT_CARD", "２4111111111111111"),
+        ("CREDIT_CARD", "4111111111111111２"),
+    ] {
+        for text in [value.to_owned(), format!("see —{value}— now")] {
+            assert_eq!(found(&text, ty), [value], "{ty} in {text:?}");
+        }
+    }
+    for text in ["٤١٥-٥٥٥-٠١٣٢x", "415-555-0132２"] {
+        assert!(found(text, "PHONE").is_empty(), "{text:?}");
+    }
+}
+
+#[test]
+fn non_letter_unicode_word_characters_do_not_create_boundaries() {
+    for (ty, value) in VALUES.into_iter().filter(|(ty, _)| *ty != "EMAIL") {
+        for neighbor in ['\u{301}', '\u{203f}', '\u{200c}'] {
+            let text = format!("{value}{neighbor}");
+            assert!(found(&text, ty).is_empty(), "{ty} in {text:?}");
+            if ty != "PHONE" {
+                let text = format!("{neighbor}{value}");
+                assert!(found(&text, ty).is_empty(), "{ty} in {text:?}");
+            }
+        }
+    }
+    for (ty, value) in VALUES
+        .into_iter()
+        .filter(|(ty, _)| matches!(*ty, "US_SSN" | "IP_ADDRESS" | "IBAN"))
+    {
+        for text in [format!("２{value}"), format!("{value}２")] {
+            assert!(found(&text, ty).is_empty(), "{ty} in {text:?}");
         }
     }
 }

@@ -12,11 +12,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 
 - The structured PII patterns (phone, US SSN, IP address, card and IBAN
-  candidates) use ASCII word boundaries, as the streaming hold-back already
-  did. Text containing non-ASCII characters is scanned on the regex crate's
-  lazy DFA instead of its slower fallback engine. A non-ASCII letter directly
-  next to a value now counts as a boundary, so `é4111 1111 1111 1111` is
-  detected; ASCII letters and digits next to a value still are not.
+  candidates) use DFA-compatible boundary context instead of Unicode word
+  boundary assertions, avoiding the slower fallback search on non-ASCII text.
+  A non-ASCII letter directly next to a value now counts as a boundary, so
+  `é4111 1111 1111 1111` is detected. Existing Unicode-digit spans and boundaries
+  beside combining marks, joiners and connector punctuation are preserved;
+  ASCII letters and digits still do not create boundaries. Streaming uses the
+  same candidate patterns and preserves their complete spans.
 
 ## [0.3.2] - 2026-11-10
 
