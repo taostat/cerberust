@@ -56,11 +56,9 @@ fn new_label_words_redact_their_values() {
         for text in [
             format!("{label}: '{VALUE}'"),
             format!("{label}={VALUE}"),
+            format!("{label}: Optional[str] = '{VALUE}'"),
             format!("{{\"{label}\": \"{VALUE}\"}}"),
         ] {
-            if label == "privateKey" && !text.starts_with('{') {
-                continue;
-            }
             assert_eq!(secret_values(&text), [VALUE], "{text}");
         }
     }
@@ -105,6 +103,136 @@ fn ordinary_key_names_and_non_credential_values_are_unchanged() {
             "{text}: {:?}",
             secret_values(text)
         );
+    }
+}
+
+#[test]
+fn prefixed_chains_preserve_labels_and_redact_only_the_final_value() {
+    for text in [
+        format!("db_password: str = smtp_password = '{VALUE}'"),
+        format!("db_password: str = smtp_password={VALUE}"),
+        format!("db_password = smtp_password = '{VALUE}'"),
+        format!("app_passphrase: str = app_credential = auth_token = '{VALUE}'"),
+    ] {
+        assert_eq!(secret_values(&text), [VALUE], "{text}");
+        assert_streamed_values(&text, &[VALUE]);
+    }
+    let text = "db_password: str = smtp_password = None";
+    assert!(secret_values(text).is_empty(), "{text}");
+    assert_streamed_values(text, &[]);
+}
+
+#[test]
+fn deeply_prefixed_chains_preserve_value_spans() {
+    let text = format!(
+        "app_password: str = {}'{VALUE}'",
+        "db_password=".repeat(16_384)
+    );
+    assert_eq!(secret_values(&text), [VALUE]);
+}
+
+#[test]
+fn path_exemptions_use_the_credential_label_suffix() {
+    for label in [
+        "credential_password",
+        "credentials_token",
+        "credential_secret",
+    ] {
+        for text in [
+            format!("{label}: '/private9'"),
+            format!(r#"{{"{label}":"/private9"}}"#),
+        ] {
+            assert_eq!(secret_values(&text), ["/private9"], "{text}");
+        }
+    }
+}
+
+#[test]
+fn placeholders_keep_their_complete_values_in_prose_and_json() {
+    for text in [
+        "private_key: <private key>",
+        "passphrase = <enter phrase>",
+        r#"{"passphrase":"YOUR_VALUE"}"#,
+        r#"{"credentials":"0xYOUR_VALUE"}"#,
+    ] {
+        assert!(secret_values(text).is_empty(), "{text}");
+        assert_streamed_values(text, &[]);
+    }
+    for value in ["<private key>9", "YOUR_VALUE9", "0xYOUR_VALUE9"] {
+        let text = format!("passphrase = '{value}'");
+        assert_eq!(secret_values(&text), [value], "{text}");
+    }
+}
+
+#[test]
+fn fetch_credentials_modes_are_not_secrets() {
+    for mode in ["include", "omit", "same-origin"] {
+        for text in [
+            format!("fetch(url, {{credentials: '{mode}'}})"),
+            format!("options.credentials = '{mode}'"),
+            format!(r#"{{"credentials":"{mode}"}}"#),
+        ] {
+            assert!(secret_values(&text).is_empty(), "{text}");
+            assert_streamed_values(&text, &[]);
+        }
+    }
+    for text in [
+        "password = 'include'",
+        "credentials = 'include9'",
+        r#"{"credentials":"same-origin9"}"#,
+    ] {
+        assert_eq!(secret_values(text).len(), 1, "{text}");
+    }
+}
+
+#[test]
+fn tokenizer_special_tokens_are_not_credentials() {
+    for (label, value) in [
+        ("pad_token", "<|endoftext|>"),
+        ("eos_token", "<|eot_id|>"),
+        ("bos_token", "<|begin_of_text|>"),
+        ("unk_token", "[UNK]"),
+        ("sep_token", "[SEP]"),
+        ("cls_token", "[CLS]"),
+        ("mask_token", "[MASK]"),
+        ("tokenizer.pad_token", "<|endoftext|>"),
+    ] {
+        let text = format!("{label} = '{value}'");
+        assert!(secret_values(&text).is_empty(), "{text}");
+        assert_streamed_values(&text, &[]);
+    }
+    for text in [
+        "client_token = '<|private9|>'",
+        "pad_token = 'private9'",
+        "pad_token = '<|private9|>suffix'",
+    ] {
+        assert_eq!(secret_values(text).len(), 1, "{text}");
+    }
+}
+
+fn assert_streamed_values(text: &str, values: &[&str]) {
+    for chunk in 1..=8 {
+        let scanner = SecretScanner::new().with_direction(Direction::Output);
+        let mut stack = ScannerStack::new(vec![Box::new(scanner) as Box<dyn Scanner>], false);
+        let mut runner = StreamOutput::new(&stack);
+        let mut emitted = String::new();
+        for part in text.as_bytes().chunks(chunk) {
+            emitted.push_str(
+                &runner
+                    .push(&mut stack, std::str::from_utf8(part).unwrap())
+                    .unwrap(),
+            );
+        }
+        emitted.push_str(&runner.finish(&mut stack).unwrap());
+        let mut expected = text.to_owned();
+        let mut originals = Vec::new();
+        for (sentinel, original) in stack.ctx().vault.entries() {
+            expected = expected.replace(original, sentinel);
+            originals.push(original);
+        }
+        originals.sort_unstable();
+        assert_eq!(originals, values, "chunk {chunk}: {text}");
+        assert_eq!(emitted, expected, "chunk {chunk}: {text}");
     }
 }
 

@@ -22,6 +22,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `key` suffix is not a label, so `primary_key`, `cache_key` and `public_key`
   are unchanged. File paths under `*_key` and `credentials` labels, and
   letters-only `<placeholder>` / `YOUR_...` values, are left intact.
+  Fetch credential modes and bracketed tokenizer special-token settings are
+  also preserved.
 
 ## [0.3.3] - 2026-11-12
 

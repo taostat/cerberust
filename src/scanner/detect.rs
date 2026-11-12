@@ -788,7 +788,7 @@ const CREDENTIAL_VALUE: &str = concat!(
     r"\s*,\s*(?:default\s*=\s*)?)?",
     r#"(?:"(?P<double>(?:\\[^\r\n]|[^"\\\r\n])*\\?)(?:"|[\r\n]|$)"#,
     r"|'(?P<single>(?:\\[^\r\n]|[^'\\\r\n])*\\?)(?:'|[\r\n]|$)",
-    r#"|(?P<template>\{\{[ \t]*[a-z_][a-z0-9_.]*[ \t]*\}\}[^\s"'&]*)"#,
+    r#"|(?P<template>(?:\{\{[ \t]*[a-z_][a-z0-9_.]*[ \t]*\}\}|<[A-Za-z _-]+>)[^\s"'&]*)"#,
     // Balanced expression bounds are indexed separately.
     r#"|(?P<bare>[a-z_][a-z0-9_.:]*[ \t]*[\[(<]|[^\s"'&]+))"#,
 );
@@ -889,7 +889,7 @@ fn credential_head_rule(anchored: bool) -> &'static Regex {
     static ANCHORED: OnceLock<Regex> = OnceLock::new();
     let re = if anchored { &ANCHORED } else { &RE };
     re.get_or_init(|| {
-        let anchor = if anchored { r"\A" } else { "" };
+        let anchor = if anchored { r"\A[A-Za-z0-9_.-]*?" } else { "" };
         structured_rule(&format!(
             "{anchor}{CREDENTIAL_LABEL}{CREDENTIAL_ASSIGNMENT}"
         ))
@@ -940,12 +940,22 @@ pub(crate) fn expression_hold_floor(buf: &[u8]) -> usize {
         .unwrap_or(buf.len())
 }
 
-fn follows_credential_chain(value: &str, chained: bool) -> bool {
+fn following_credential_head(value: &str, chained: bool) -> Option<usize> {
+    let head = credential_head_rule(true).find(value)?;
     let short = value
         .char_indices()
         .take_while(|(offset, _)| *offset < 6)
         .any(|(_, ch)| ch.is_whitespace() || matches!(ch, '\'' | '"' | '&'));
-    (chained || short) && credential_head_rule(true).is_match(value)
+    let spaced = head
+        .as_str()
+        .split_once([':', '='])
+        .is_some_and(|(label, _)| label.ends_with(char::is_whitespace));
+    if !chained && !short && !spaced {
+        return None;
+    }
+    credential_head_rule(false)
+        .find(head.as_str())
+        .map(|label| label.start())
 }
 
 fn labelled_expression_bounds(text: &str) -> Vec<(usize, usize, bool)> {
@@ -964,9 +974,9 @@ fn labelled_expression_bounds(text: &str) -> Vec<(usize, usize, bool)> {
         let typed_end = index.typed_head_end(head.start());
         let value_start = typed_end.unwrap_or(head.end());
         let in_chain = typed_end.is_some() || typed_chain;
-        if follows_credential_chain(&text[value_start..], in_chain) {
+        if let Some(offset) = following_credential_head(&text[value_start..], in_chain) {
             chain_start.get_or_insert(head.start());
-            cursor = value_start;
+            cursor = value_start + offset;
             chained = Some(cursor);
             typed_chain = in_chain;
             continue;
@@ -1148,6 +1158,8 @@ fn is_json_credential(key: &str, value: &str) -> bool {
         && !is_non_secret_assignment_value(&value, true, false)
         && !is_public_hardhat_dev_key(&value)
         && !is_json_placeholder_value(&value)
+        && !is_placeholder_shape(&value)
+        && !is_fetch_credentials_mode(&key, &value)
         && !is_json_type_hint(&value)
         && !is_json_reference(&value)
 }
@@ -1236,8 +1248,36 @@ fn is_reference_name(before: &str) -> bool {
 /// `private_key: ./certs/server.pem`.
 fn is_path_label_value(label: &str, value: &str) -> bool {
     let label = label.to_ascii_lowercase();
-    (label == "pwd" || label.ends_with("key") || label.contains("credential"))
+    (label == "pwd"
+        || label.ends_with("key")
+        || label.ends_with("credential")
+        || label.ends_with("credentials"))
         && is_directory_path(value)
+}
+
+fn is_fetch_credentials_mode(label: &str, value: &str) -> bool {
+    label
+        .rsplit('.')
+        .next()
+        .is_some_and(|name| name.eq_ignore_ascii_case("credentials"))
+        && matches!(value, "include" | "omit" | "same-origin")
+}
+
+fn is_tokenizer_special_token(label: &str, value: &str) -> bool {
+    let label = label.to_ascii_lowercase();
+    matches!(
+        label.rsplit('.').next(),
+        Some(
+            "bos_token"
+                | "eos_token"
+                | "unk_token"
+                | "sep_token"
+                | "pad_token"
+                | "cls_token"
+                | "mask_token"
+        )
+    ) && (value.starts_with('<') && value.ends_with('>')
+        || value.starts_with('[') && value.ends_with(']'))
 }
 
 fn is_directory_path(value: &str) -> bool {
@@ -1790,8 +1830,8 @@ fn detect_labelled_secrets(text: &str, spans: &mut Vec<Span>) {
         let typed_end = index.typed_head_end(head.start());
         let value_start = typed_end.unwrap_or(head.end());
         let in_chain = typed_end.is_some() || chained == Some(head.start());
-        if follows_credential_chain(&text[value_start..], in_chain) {
-            cursor = value_start;
+        if let Some(offset) = following_credential_head(&text[value_start..], in_chain) {
+            cursor = value_start + offset;
             chained = in_chain.then_some(cursor);
             continue;
         }
@@ -1854,6 +1894,8 @@ fn detect_labelled_secrets(text: &str, spans: &mut Vec<Span>) {
             && !is_public_hardhat_dev_key(value)
             && !is_path_label_value(label, value)
             && !is_placeholder_shape(value)
+            && !is_fetch_credentials_mode(label, value)
+            && !is_tokenizer_special_token(label, value)
         {
             spans.push(Span::new(start, start + value.len(), "SECRET", 0.9));
         }
