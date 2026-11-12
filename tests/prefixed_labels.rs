@@ -165,6 +165,28 @@ fn placeholders_keep_their_complete_values_in_prose_and_json() {
 }
 
 #[test]
+fn placeholder_arguments_preserve_call_delimiters() {
+    for value in ["YOUR_PASSPHRASE", "0xYOUR_VALUE", "<private key>"] {
+        for closing in [")", "))"] {
+            let text = format!("connect(passphrase={value}{closing}");
+            assert!(secret_values(&text).is_empty(), "{text}");
+            assert_streamed_values(&text, &[]);
+        }
+        let text = format!("connect(passphrase={value},timeout=30)");
+        assert!(secret_values(&text).is_empty(), "{text}");
+        assert_streamed_values(&text, &[]);
+        let text = format!("connect(passphrase={value},password='hunter2')");
+        assert_eq!(secret_values(&text), ["hunter2"], "{text}");
+        assert_streamed_values(&text, &["hunter2"]);
+        for literal in [format!("{value})"), format!("{value})9")] {
+            let text = format!("connect(passphrase='{literal}')");
+            assert_eq!(secret_values(&text), [literal.as_str()], "{text}");
+            assert_streamed_values(&text, &[&literal]);
+        }
+    }
+}
+
+#[test]
 fn fetch_credentials_modes_are_not_secrets() {
     for mode in ["include", "omit", "same-origin"] {
         for text in [

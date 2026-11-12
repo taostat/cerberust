@@ -1158,7 +1158,6 @@ fn is_json_credential(key: &str, value: &str) -> bool {
         && !is_non_secret_assignment_value(&value, true, false)
         && !is_public_hardhat_dev_key(&value)
         && !is_json_placeholder_value(&value)
-        && !is_placeholder_shape(&value)
         && !is_fetch_credentials_mode(&key, &value)
         && !is_json_type_hint(&value)
         && !is_json_reference(&value)
@@ -1893,7 +1892,6 @@ fn detect_labelled_secrets(text: &str, spans: &mut Vec<Span>) {
             && !is_non_secret_assignment_value(value, quoted.is_some(), annotation)
             && !is_public_hardhat_dev_key(value)
             && !is_path_label_value(label, value)
-            && !is_placeholder_shape(value)
             && !is_fetch_credentials_mode(label, value)
             && !is_tokenizer_special_token(label, value)
         {
@@ -2467,7 +2465,8 @@ fn is_non_secret_assignment_value(value: &str, quoted: bool, annotation: bool) -
             | "<your token>"
             | "<your secret>"
             | "<your api key>"
-    ) || assignment_reference_rule().is_match(reference)
+    ) || is_placeholder_shape(reference)
+        || assignment_reference_rule().is_match(reference)
     {
         return true;
     }
