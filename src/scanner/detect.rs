@@ -792,6 +792,10 @@ const CREDENTIAL_VALUE: &str = concat!(
     // Balanced expression bounds are indexed separately.
     r#"|(?P<bare>[a-z_][a-z0-9_.:]*[ \t]*[\[(<]|[^\s"'&]+))"#,
 );
+const CREDENTIAL_OBJECT_HEAD: &str = concat!(
+    r#"\{\s*(?:[A-Za-z_$][A-Za-z0-9_$]*|"(?:\\[^\r\n]|[^"\\\r\n])*""#,
+    r"|'(?:\\[^\r\n]|[^'\\\r\n])*')\s*:"
+);
 const URL_CREDENTIAL_PATTERN: &str = r"[a-z][a-z0-9+.\-]*://[^\s:/@]+:([^\s/@]+)@";
 /// A double-quoted object key that ends in a credential label, followed by a
 /// double-quoted string value: `"password": "..."`, `"db_password":"..."`.
@@ -837,6 +841,8 @@ pub fn secret_pattern_sources() -> Vec<String> {
         )
         .chain([
             credential_pattern(true).replace(r"\b", ""),
+            format!("{CREDENTIAL_LABEL}(?:{CREDENTIAL_TYPE}|{CREDENTIAL_ASSIGNMENT}){CREDENTIAL_OBJECT_HEAD}")
+                .replace(r"\b", ""),
             URL_CREDENTIAL_PATTERN.to_owned(),
             JSON_CREDENTIAL_PATTERN.to_owned(),
         ])
@@ -1245,11 +1251,26 @@ fn is_reference_name(before: &str) -> bool {
 /// `private_key: ./certs/server.pem`.
 fn is_path_label_value(label: &str, value: &str) -> bool {
     let label = label.to_ascii_lowercase();
-    (label == "pwd"
-        || label.ends_with("key")
-        || label.ends_with("credential")
-        || label.ends_with("credentials"))
-        && is_directory_path(value)
+    let file_label =
+        label.ends_with("key") || label.ends_with("credential") || label.ends_with("credentials");
+    (label == "pwd" || file_label) && is_directory_path(value)
+        || file_label && is_relative_file_path(value)
+}
+
+fn is_relative_file_path(value: &str) -> bool {
+    let Some((directory, file)) = value.rsplit_once(['/', '\\']) else {
+        return false;
+    };
+    let Some((name, extension)) = file.rsplit_once('.') else {
+        return false;
+    };
+    !directory.is_empty()
+        && !name.is_empty()
+        && !extension.is_empty()
+        && extension.bytes().all(|byte| byte.is_ascii_alphanumeric())
+        && value
+            .chars()
+            .all(|ch| ch.is_alphanumeric() || matches!(ch, '_' | '-' | '.' | '/' | '\\' | ' '))
 }
 
 fn is_fetch_credentials_mode(label: &str, value: &str) -> bool {
@@ -1258,6 +1279,20 @@ fn is_fetch_credentials_mode(label: &str, value: &str) -> bool {
         .next()
         .is_some_and(|name| name.eq_ignore_ascii_case("credentials"))
         && matches!(value, "include" | "omit" | "same-origin")
+}
+
+fn is_credential_object(head: &str, value: &str) -> bool {
+    static RE: OnceLock<Regex> = OnceLock::new();
+    if !value.starts_with('{') {
+        return false;
+    }
+    let label = head
+        .trim_end_matches(|ch: char| ch.is_whitespace() || ch == ':' || ch == '=')
+        .to_ascii_lowercase();
+    (label.ends_with("credential") || label.ends_with("credentials"))
+        && RE
+            .get_or_init(|| structured_rule(&format!(r"\A{CREDENTIAL_OBJECT_HEAD}")))
+            .is_match(value)
 }
 
 fn is_tokenizer_special_token(label: &str, value: &str) -> bool {
@@ -1833,6 +1868,10 @@ fn detect_labelled_secrets(text: &str, spans: &mut Vec<Span>) {
             continue;
         }
         chained = None;
+        if is_credential_object(head.as_str(), &text[value_start..]) {
+            cursor = value_start + 1;
+            continue;
+        }
         let Some(caps) = labelled_secret_rule(typed_end.is_some()).captures_at(text, head.start())
         else {
             break;

@@ -24,6 +24,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   letters-only `<placeholder>` / `YOUR_...` values, are left intact.
   Fetch credential modes and bracketed tokenizer special-token settings are
   also preserved.
+  Credential objects written as `{name: value}` retain their property names;
+  nested labelled secrets are still scanned.
 
 ## [0.3.3] - 2026-11-12
 

@@ -167,6 +167,38 @@ fn path_exemptions_use_the_credential_label_suffix() {
 }
 
 #[test]
+fn relative_credential_file_paths_are_preserved() {
+    for label in [
+        "private_key",
+        "APP_CREDENTIALS",
+        "credential",
+        "SIGNING_KEY",
+    ] {
+        for path in [
+            "certs/server.pem",
+            "config/google-credentials.json",
+            r"keys\signing.key",
+        ] {
+            for text in [
+                format!("{label}={path}\nfinished!\n"),
+                format!("{label} = '{path}'\nfinished!\n"),
+                format!(r#"{{"{label}":"{}"}}"#, path.replace('\\', r"\\")),
+            ] {
+                assert!(secret_values(&text).is_empty(), "{text}");
+                assert_streamed_values(&text, &[]);
+            }
+        }
+    }
+    for value in ["some/base64/12345", "a.b/cD1234==", "Abc.de9"] {
+        let text = format!("private_key = '{value}'\nfinished!\n");
+        assert_eq!(secret_values(&text), [value], "{text}");
+        assert_streamed_values(&text, &[value]);
+    }
+    let text = "db_password = 'certs/server.pem'";
+    assert_eq!(secret_values(text), ["certs/server.pem"]);
+}
+
+#[test]
 fn placeholders_keep_their_complete_values_in_prose_and_json() {
     for text in [
         "private_key: <private key>",
@@ -223,6 +255,33 @@ fn fetch_credentials_modes_are_not_secrets() {
         r#"{"credentials":"same-origin9"}"#,
     ] {
         assert_eq!(secret_values(text).len(), 1, "{text}");
+    }
+}
+
+#[test]
+fn credential_objects_preserve_properties_and_scan_nested_values() {
+    for label in ["credentials", "app_credentials", "credential"] {
+        for object in [
+            "{username: 'alice', password: 'hunter2'}",
+            "{username : 'alice', password: 'hunter2'}",
+            r#"{"username":"alice","password":"hunter2"}"#,
+            "{username: 'alice', password: 'hunter2'",
+        ] {
+            let text = format!("{label} = {object}\nfinished!\n");
+            assert_eq!(secret_values(&text), ["hunter2"], "{text}");
+            assert_streamed_values(&text, &["hunter2"]);
+        }
+        let text = format!("{label} = {{username: 'alice'}}\n");
+        assert!(secret_values(&text).is_empty(), "{text}");
+        assert_streamed_values(&text, &[]);
+    }
+    for (assignment, value) in [
+        ("{private9}", "{private9}"),
+        ("'{username: hunter2}'", "{username: hunter2}"),
+    ] {
+        let text = format!("credentials = {assignment}\nfinished!\n");
+        assert_eq!(secret_values(&text), [value], "{text}");
+        assert_streamed_values(&text, &[value]);
     }
 }
 
