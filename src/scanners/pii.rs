@@ -14,7 +14,9 @@
 //! Both run in one output pass — restore rehydrates the input sentinels while
 //! this scanner redacts newly-generated PII.
 
-use crate::scanner::detect::{detect_structured, resolve_overlaps, structured_pattern_sources};
+use crate::scanner::detect::{
+    detect_structured, resolve_overlaps, structured_match_ranges, structured_pattern_sources,
+};
 use crate::scanner::{
     Direction, Disposition, RestorePolicy, ScanCtx, ScanResult, Scanner, ScannerId, Verdict,
 };
@@ -122,6 +124,10 @@ impl Scanner for PiiScanner {
 
     fn stream_patterns(&self) -> Vec<String> {
         structured_pattern_sources()
+    }
+
+    fn stream_match_ranges(&self, buf: &[u8]) -> Vec<std::ops::Range<usize>> {
+        structured_match_ranges(buf)
     }
 }
 

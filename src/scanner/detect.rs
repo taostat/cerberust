@@ -111,28 +111,60 @@ fn never_match() -> &'static Regex {
     })
 }
 
-/// The structured-PII source patterns, the single source both the compiled
-/// detector regexes and the streaming hold-back DFA read. Order matches the
-/// fields of [`StructuredRules`].
+/// The structured-PII source patterns. `structured_boundary_pattern` expands
+/// their boundary markers for both detection and streaming hold-back. Order
+/// matches the fields of [`StructuredRules`].
 const STRUCTURED_PATTERNS: [&str; 6] = [
     r"[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,}",
-    r"(?:\+?\d{1,3}[\s.\-]?)?(?:\(\d{3}\)|\d{3})[\s.\-]\d{3}[\s.\-]\d{4}\b",
-    r"\b\d{3}-\d{2}-\d{4}\b",
-    r"\b(?:\d{1,3}\.){3}\d{1,3}\b",
+    r"(?:\+?\d{1,3}[\s.\-]?)?(?:\(\d{3}\)|\d{3})[\s.\-]\d{3}[\s.\-]\d{4}(?-u:\b)",
+    r"(?-u:\b)\d{3}-\d{2}-\d{4}(?-u:\b)",
+    r"(?-u:\b)(?:\d{1,3}\.){3}\d{1,3}(?-u:\b)",
     // Candidate card numbers: 13–19 digits, optionally space/hyphen grouped.
     // The separator sits *between* digits (`\d(?:[ \-]?\d){12,18}`), never after
     // the last one, so a trailing space before the next word is not swallowed
     // into the match (which would redact `4111 1111 1111 1111 ` and corrupt the
     // following text).
-    r"\b\d(?:[ \-]?\d){12,18}\b",
+    r"(?-u:\b)\d(?:[ \-]?\d){12,18}(?-u:\b)",
     // Candidate IBANs (ISO 13616): 2-letter country + 2 check digits + up to 30
     // BBAN alphanumerics, optionally single-spaced (the human-readable grouping
     // varies by country). The match is deliberately greedy and may overrun into
     // the following word; `iban_ok` strips spaces, checks the country-specific
     // length, then mod-97, trimming trailing groups until a valid IBAN is found
     // or the candidate is rejected — so an overrun never produces a redaction.
-    r"\b[A-Za-z]{2}\d{2}(?:[ ]?[A-Za-z0-9]){11,32}\b",
+    r"(?-u:\b)[A-Za-z]{2}\d{2}(?:[ ]?[A-Za-z0-9]){11,32}(?-u:\b)",
 ];
+
+/// Consume boundary context instead of a Unicode look assertion, which makes
+/// the regex fall back from its lazy DFA on non-ASCII input. Non-ASCII letters
+/// now delimit values; other Unicode word characters retain their old meaning.
+/// In particular, `\d` still admits Unicode digits, so an ASCII `\b` alone
+/// would miss phones ending in one and truncate mixed-digit card candidates.
+fn structured_boundary_pattern(pattern: &str) -> String {
+    const BOUNDARY: &str = r"(?-u:\b)";
+    const DELIMITER: &str = r"[\W[\p{L}&&[^\p{ASCII}]]]";
+    let Some(body) = pattern.strip_suffix(BOUNDARY) else {
+        return pattern.to_owned();
+    };
+    let (left, body) = match body.strip_prefix(BOUNDARY) {
+        Some(body) => (format!(r"(?:\A|{DELIMITER})"), body),
+        None => (String::new(), body),
+    };
+    format!(r"{left}(?P<value>{body})(?:\z|{DELIMITER})")
+}
+
+/// Only the captured value is PII. Resume at its end so adjacent candidates
+/// can share the consumed delimiter, as zero-width boundaries previously did.
+fn structured_matches<'a>(
+    rule: &'a Regex,
+    text: &'a str,
+) -> impl Iterator<Item = regex::Match<'a>> + 'a {
+    let mut next = 0;
+    std::iter::from_fn(move || {
+        let value = rule.captures_at(text, next)?.name("value")?;
+        next = value.end();
+        Some(value)
+    })
+}
 
 /// Candidate international phone numbers: `+` then an ASCII digit run in any
 /// grouping the country uses (`+44 7700 900123`, `+33 1 23 45 67 89`). The run
@@ -155,7 +187,7 @@ const INTL_PHONE_HOLD_PATTERN: &str = r"\+[0-9](?:[ .\-]?[0-9]){0,15}";
 pub fn structured_pattern_sources() -> Vec<String> {
     let mut sources: Vec<String> = STRUCTURED_PATTERNS
         .iter()
-        .map(|p| (*p).to_owned())
+        .map(|p| structured_boundary_pattern(p))
         .collect();
     sources.push(INTL_PHONE_HOLD_PATTERN.to_owned());
     sources
@@ -175,11 +207,11 @@ fn structured_rules() -> &'static StructuredRules {
     static RULES: OnceLock<StructuredRules> = OnceLock::new();
     RULES.get_or_init(|| StructuredRules {
         email: structured_rule(STRUCTURED_PATTERNS[0]),
-        phone: structured_rule(STRUCTURED_PATTERNS[1]),
-        ssn: structured_rule(STRUCTURED_PATTERNS[2]),
-        ip: structured_rule(STRUCTURED_PATTERNS[3]),
-        digits: structured_rule(STRUCTURED_PATTERNS[4]),
-        iban: structured_rule(STRUCTURED_PATTERNS[5]),
+        phone: structured_rule(&structured_boundary_pattern(STRUCTURED_PATTERNS[1])),
+        ssn: structured_rule(&structured_boundary_pattern(STRUCTURED_PATTERNS[2])),
+        ip: structured_rule(&structured_boundary_pattern(STRUCTURED_PATTERNS[3])),
+        digits: structured_rule(&structured_boundary_pattern(STRUCTURED_PATTERNS[4])),
+        iban: structured_rule(&structured_boundary_pattern(STRUCTURED_PATTERNS[5])),
         intl_phone: structured_rule(INTL_PHONE_PATTERN),
     })
 }
@@ -196,7 +228,7 @@ pub fn detect_structured(text: &str) -> Vec<Span> {
     for m in r.email.find_iter(text) {
         spans.push(Span::new(m.start(), m.end(), "EMAIL", 0.95));
     }
-    for m in r.phone.find_iter(text) {
+    for m in structured_matches(&r.phone, text) {
         spans.push(Span::new(m.start(), m.end(), "PHONE", 0.85));
     }
     for m in r.intl_phone.find_iter(text) {
@@ -204,28 +236,42 @@ pub fn detect_structured(text: &str) -> Vec<Span> {
             spans.push(Span::new(m.start(), m.end(), "PHONE", 0.85));
         }
     }
-    for m in r.ssn.find_iter(text) {
+    for m in structured_matches(&r.ssn, text) {
         if valid_us_ssn(m.as_str()) {
             spans.push(Span::new(m.start(), m.end(), "US_SSN", 0.9));
         }
     }
-    for m in r.ip.find_iter(text) {
+    for m in structured_matches(&r.ip, text) {
         if is_valid_ipv4(m.as_str()) {
             spans.push(Span::new(m.start(), m.end(), "IP_ADDRESS", 0.85));
         }
     }
-    for m in r.digits.find_iter(text) {
+    for m in structured_matches(&r.digits, text) {
         if card_number_ok(m.as_str()) {
             spans.push(Span::new(m.start(), m.end(), "CREDIT_CARD", 0.95));
         }
     }
-    for m in r.iban.find_iter(text) {
+    for m in structured_matches(&r.iban, text) {
         for (offset, len) in valid_ibans_in(m.as_str()) {
             let start = m.start() + offset;
             spans.push(Span::new(start, start + len, "IBAN", 0.95));
         }
     }
     spans
+}
+
+/// Keep completed candidates whole even when two of them share boundary
+/// context. The hold-back regex's ordinary `find_iter` cannot reuse that byte.
+/// Include rejected candidates too: a fragment could pass validation on its own.
+pub(crate) fn structured_match_ranges(buf: &[u8]) -> Vec<std::ops::Range<usize>> {
+    let Ok(text) = std::str::from_utf8(buf) else {
+        return Vec::new();
+    };
+    let r = structured_rules();
+    [&r.phone, &r.ssn, &r.ip, &r.digits, &r.iban]
+        .into_iter()
+        .flat_map(|rule| structured_matches(rule, text).map(|m| m.range()))
+        .collect()
 }
 
 // SSA excludes these unassigned ranges; see its SSN fact sheet:
@@ -2450,6 +2496,29 @@ mod tests {
         reason = "tests assert on known-good values"
     )]
     use super::*;
+
+    #[test]
+    fn structured_patterns_have_no_unicode_word_boundaries() {
+        // A Unicode word boundary forces the regex crate off its lazy DFA for
+        // any haystack containing a non-ASCII byte.
+        for pattern in structured_pattern_sources()
+            .into_iter()
+            .chain([INTL_PHONE_PATTERN.to_owned()])
+        {
+            let hir = regex_automata::util::syntax::parse(&pattern).unwrap();
+            let looks = hir.properties().look_set();
+            assert!(
+                !looks.contains_word_unicode(),
+                "Unicode word boundary in {pattern}"
+            );
+            let re = regex_automata::hybrid::regex::Regex::new(&pattern).unwrap();
+            let mut cache = re.create_cache();
+            let input = regex_automata::Input::new(
+                "é ٤١٥-٥٥٥-٠١٣٢ — 4111 1111 1111 1111 — GB82 WEST 1234 5698 7654 32",
+            );
+            re.try_search(&mut cache, &input).unwrap();
+        }
+    }
 
     #[test]
     fn detects_taostats_api_keys() {

@@ -244,6 +244,33 @@ fn completed_matches_stream_like_unary() {
 }
 
 #[test]
+fn structured_unicode_boundaries_stream_like_unary() {
+    for response in [
+        "call ٤١٥-٥٥٥-٠١٣٢ today",
+        "call 415-555-013２ today",
+        "call ٤١٥-٥٥٥-٠١٣٢x today",
+        "call 415-555-0132２ today",
+        "pay ２4111111111111111 today",
+        "pay 4111111111111111２ today",
+        "pay 4111 1111 1111 1111\u{301} today",
+        "id ‿536-22-1475 today",
+        "ip 192.168.1.20\u{200c} today",
+        "send to ２GB82 WEST 1234 5698 7654 32 today",
+        "é415-555-0132漢 end",
+        "é536-22-1475漢 end",
+        "é192.168.1.20漢 end",
+        "é4111 1111 1111 1111漢 end",
+        "éGB82 WEST 1234 5698 7654 32漢 end",
+        "4111 1111 1111 1111—4111 1111 1111 1111\n5 end",
+        "GB82 WEST 1234 5698 7654 32—GB82 WEST 1234 5698 7654 32\n5 end",
+    ] {
+        for chunk_len in 1..=8 {
+            assert_pii_stream_equals_unary(response, chunk_len);
+        }
+    }
+}
+
+#[test]
 fn straddle_follows_the_unary_regex_choice_among_alternatives() {
     // Leftmost-first picks `a`, not the longer `a b`, so the unary scan's next
     // match is `b c`; holding by the longest alternative would skip `b c` and

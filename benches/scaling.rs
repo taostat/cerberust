@@ -31,7 +31,7 @@ const LARGE_STACK_BYTES: usize = 10 * 1024 * 1024;
 type BenchmarkCase = (&'static str, Box<dyn Scanner>, fn(usize) -> String);
 
 fn main() {
-    let cases: [BenchmarkCase; 10] = [
+    let cases: [BenchmarkCase; 11] = [
         (
             "regex_dense",
             Box::new(RegexScanner::from_patterns([(r"\d+", "NUMBER")]).0),
@@ -50,6 +50,9 @@ fn main() {
         ("pii_dense", Box::new(PiiScanner::new()), pii_values),
         ("pii_rare", Box::new(PiiScanner::new()), |size| {
             sparse(size, "alice@example.com")
+        }),
+        ("pii_rare_non_ascii", Box::new(PiiScanner::new()), |size| {
+            non_ascii_sparse(size, "alice@example.com")
         }),
         (
             "secrets_dense",
@@ -164,6 +167,14 @@ fn repeated(size: usize, unit: &str) -> String {
         text.push_str(unit);
     }
     text.truncate(size);
+    text
+}
+
+/// `sparse` with one non-ASCII character at the start, so the PII regexes scan
+/// a haystack that is not pure ASCII.
+fn non_ascii_sparse(size: usize, needle: &str) -> String {
+    let mut text = sparse(size, needle);
+    text.replace_range(..2, "\u{e9}");
     text
 }
 

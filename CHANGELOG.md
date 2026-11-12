@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.3] - 2026-11-12
+
+### Changed
+
+- The structured PII patterns (phone, US SSN, IP address, card and IBAN
+  candidates) use DFA-compatible boundary context instead of Unicode word
+  boundary assertions, avoiding the slower fallback search on non-ASCII text.
+  A non-ASCII letter directly next to a value now counts as a boundary, so
+  `é4111 1111 1111 1111` is detected. Existing Unicode-digit spans and boundaries
+  beside combining marks, joiners and connector punctuation are preserved;
+  ASCII letters and digits still do not create boundaries. Streaming uses the
+  same candidate patterns and preserves their complete spans.
+
 ## [0.3.2] - 2026-11-10
 
 ### Added
@@ -243,7 +256,8 @@ Initial public release.
 - **Benchmark harness** (`benchmarks/`) — head-to-head precision/recall and
   throughput against Python's `llm-guard` over a shared labelled corpus.
 
-[Unreleased]: https://github.com/taostat/cerberust/compare/v0.3.2...HEAD
+[Unreleased]: https://github.com/taostat/cerberust/compare/v0.3.3...HEAD
+[0.3.3]: https://github.com/taostat/cerberust/compare/v0.3.2...v0.3.3
 [0.3.2]: https://github.com/taostat/cerberust/compare/v0.3.1...v0.3.2
 [0.3.1]: https://github.com/taostat/cerberust/compare/v0.3.0...v0.3.1
 [0.3.0]: https://github.com/taostat/cerberust/compare/v0.2.2...v0.3.0
