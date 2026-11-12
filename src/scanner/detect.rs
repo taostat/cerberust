@@ -116,22 +116,22 @@ fn never_match() -> &'static Regex {
 /// fields of [`StructuredRules`].
 const STRUCTURED_PATTERNS: [&str; 6] = [
     r"[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,}",
-    r"(?:\+?\d{1,3}[\s.\-]?)?(?:\(\d{3}\)|\d{3})[\s.\-]\d{3}[\s.\-]\d{4}\b",
-    r"\b\d{3}-\d{2}-\d{4}\b",
-    r"\b(?:\d{1,3}\.){3}\d{1,3}\b",
+    r"(?:\+?\d{1,3}[\s.\-]?)?(?:\(\d{3}\)|\d{3})[\s.\-]\d{3}[\s.\-]\d{4}(?-u:\b)",
+    r"(?-u:\b)\d{3}-\d{2}-\d{4}(?-u:\b)",
+    r"(?-u:\b)(?:\d{1,3}\.){3}\d{1,3}(?-u:\b)",
     // Candidate card numbers: 13–19 digits, optionally space/hyphen grouped.
     // The separator sits *between* digits (`\d(?:[ \-]?\d){12,18}`), never after
     // the last one, so a trailing space before the next word is not swallowed
     // into the match (which would redact `4111 1111 1111 1111 ` and corrupt the
     // following text).
-    r"\b\d(?:[ \-]?\d){12,18}\b",
+    r"(?-u:\b)\d(?:[ \-]?\d){12,18}(?-u:\b)",
     // Candidate IBANs (ISO 13616): 2-letter country + 2 check digits + up to 30
     // BBAN alphanumerics, optionally single-spaced (the human-readable grouping
     // varies by country). The match is deliberately greedy and may overrun into
     // the following word; `iban_ok` strips spaces, checks the country-specific
     // length, then mod-97, trimming trailing groups until a valid IBAN is found
     // or the candidate is rejected — so an overrun never produces a redaction.
-    r"\b[A-Za-z]{2}\d{2}(?:[ ]?[A-Za-z0-9]){11,32}\b",
+    r"(?-u:\b)[A-Za-z]{2}\d{2}(?:[ ]?[A-Za-z0-9]){11,32}(?-u:\b)",
 ];
 
 /// Candidate international phone numbers: `+` then an ASCII digit run in any
@@ -2450,6 +2450,20 @@ mod tests {
         reason = "tests assert on known-good values"
     )]
     use super::*;
+
+    #[test]
+    fn structured_patterns_have_no_unicode_word_boundaries() {
+        // A Unicode word boundary forces the regex crate off its lazy DFA for
+        // any haystack containing a non-ASCII byte.
+        for pattern in STRUCTURED_PATTERNS.iter().chain([&INTL_PHONE_PATTERN]) {
+            let hir = regex_automata::util::syntax::parse(pattern).unwrap();
+            let looks = hir.properties().look_set();
+            assert!(
+                !looks.contains_word_unicode(),
+                "Unicode word boundary in {pattern}"
+            );
+        }
+    }
 
     #[test]
     fn detects_taostats_api_keys() {
