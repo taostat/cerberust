@@ -796,6 +796,10 @@ const CREDENTIAL_OBJECT_HEAD: &str = concat!(
     r#"\{\s*(?:[A-Za-z_$][A-Za-z0-9_$]*\s*[:,]|(?:"(?:\\[^\r\n]|[^"\\\r\n])*""#,
     r"|'(?:\\[^\r\n]|[^'\\\r\n])*')\s*:)"
 );
+const CREDENTIAL_MAPPING_HEAD: &str = concat!(
+    r#"[ \t]*:[ \t]*\r?\n[ \t]+(?:[A-Za-z_$][A-Za-z0-9_$.-]*|"(?:\\[^\r\n]|[^"\\\r\n])*""#,
+    r"|'(?:\\[^\r\n]|[^'\\\r\n])*')[ \t]*:[ \t\r\n]"
+);
 const URL_CREDENTIAL_PATTERN: &str = r"[a-z][a-z0-9+.\-]*://[^\s:/@]+:([^\s/@]+)@";
 /// A double-quoted object key that ends in a credential label, followed by a
 /// double-quoted string value: `"password": "..."`, `"db_password":"..."`.
@@ -843,6 +847,7 @@ pub fn secret_pattern_sources() -> Vec<String> {
             credential_pattern(true).replace(r"\b", ""),
             format!("{CREDENTIAL_LABEL}(?:{CREDENTIAL_TYPE}|{CREDENTIAL_ASSIGNMENT}){CREDENTIAL_OBJECT_HEAD}")
                 .replace(r"\b", ""),
+            format!("{CREDENTIAL_LABEL}{CREDENTIAL_MAPPING_HEAD}").replace(r"\b", ""),
             URL_CREDENTIAL_PATTERN.to_owned(),
             JSON_CREDENTIAL_PATTERN.to_owned(),
         ])
@@ -1281,18 +1286,30 @@ fn is_fetch_credentials_mode(label: &str, value: &str) -> bool {
         && matches!(value, "include" | "omit" | "same-origin")
 }
 
-fn is_credential_object(head: &str, value: &str) -> bool {
-    static RE: OnceLock<Regex> = OnceLock::new();
-    if !value.starts_with('{') {
-        return false;
-    }
+fn credential_properties_start(
+    text: &str,
+    head: regex::Match<'_>,
+    value_start: usize,
+) -> Option<usize> {
+    static OBJECT: OnceLock<Regex> = OnceLock::new();
+    static MAPPING: OnceLock<Regex> = OnceLock::new();
     let label = head
+        .as_str()
         .trim_end_matches(|ch: char| ch.is_whitespace() || ch == ':' || ch == '=')
         .to_ascii_lowercase();
-    (label.ends_with("credential") || label.ends_with("credentials"))
-        && RE
-            .get_or_init(|| structured_rule(&format!(r"\A{CREDENTIAL_OBJECT_HEAD}")))
-            .is_match(value)
+    if !(label.ends_with("credential") || label.ends_with("credentials")) {
+        return None;
+    }
+    if OBJECT
+        .get_or_init(|| structured_rule(&format!(r"\A{CREDENTIAL_OBJECT_HEAD}")))
+        .is_match(&text[value_start..])
+    {
+        return Some(value_start + 1);
+    }
+    MAPPING
+        .get_or_init(|| structured_rule(&format!(r"\A{CREDENTIAL_LABEL}{CREDENTIAL_MAPPING_HEAD}")))
+        .is_match(&text[head.start()..])
+        .then_some(value_start)
 }
 
 fn is_tokenizer_special_token(label: &str, value: &str) -> bool {
@@ -1868,8 +1885,8 @@ fn detect_labelled_secrets(text: &str, spans: &mut Vec<Span>) {
             continue;
         }
         chained = None;
-        if is_credential_object(head.as_str(), &text[value_start..]) {
-            cursor = value_start + 1;
+        if let Some(start) = credential_properties_start(text, head, value_start) {
+            cursor = start;
             continue;
         }
         let Some(caps) = labelled_secret_rule(typed_end.is_some()).captures_at(text, head.start())

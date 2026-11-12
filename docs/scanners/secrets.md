@@ -101,8 +101,8 @@ Four layers of detection, all emitting spans into the shared redact path:
    `token=YOUR_TOKEN` do not produce labelled-secret redactions.
    Fetch credential modes and bracketed tokenizer special-token settings are
    also left intact.
-   Credential objects written as `{name: value}` retain their property names;
-   nested labelled secrets are still scanned.
+   Credential objects written as `{name: value}` and indented YAML mappings
+   retain their property names; nested labelled secrets are still scanned.
    A double-quoted JSON key ending in a credential label, such as
    `{"password": "…"}` or `"db_password": "…"`, also produces value-only spans
    when its decoded value is a single-token string. `null`, booleans, numbers,

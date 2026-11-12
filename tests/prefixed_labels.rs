@@ -306,6 +306,30 @@ fn credential_objects_preserve_shorthand_properties() {
 }
 
 #[test]
+fn credential_mappings_preserve_properties_and_scan_nested_values() {
+    for label in ["credentials", "app_credentials", "credential"] {
+        for property in ["username:", "username :", "'username':", "\"username\":"] {
+            for newline in ["\n", "\r\n"] {
+                let text = format!(
+                    "{label}:{newline}  {property} alice{newline}  password: '{VALUE}'{newline}finished!{newline}"
+                );
+                assert_eq!(secret_values(&text), [VALUE], "{text}");
+                assert_streamed_values(&text, &[VALUE]);
+            }
+        }
+        let text = format!("{label}:\n  username: alice\nfinished!\n");
+        assert!(secret_values(&text).is_empty(), "{text}");
+        assert_streamed_values(&text, &[]);
+    }
+    for value in ["hunter2", "abc:def", "'username: alice'"] {
+        let text = format!("credentials:\n  {value}\nfinished!\n");
+        let expected = value.trim_matches('\'');
+        assert_eq!(secret_values(&text), [expected], "{text}");
+        assert_streamed_values(&text, &[expected]);
+    }
+}
+
+#[test]
 fn tokenizer_special_tokens_are_not_credentials() {
     for (label, value) in [
         ("pad_token", "<|endoftext|>"),
