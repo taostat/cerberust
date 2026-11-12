@@ -85,7 +85,10 @@ Four layers of detection, all emitting spans into the shared redact path:
    placeholders keep their names. Ported rules name their placeholders after
    the gitleaks rule id (`github-fine-grained-pat` → `GITHUB_FINE_GRAINED_PAT`).
 
-2. **Labelled secrets** — `password=…`, `api_key: …`, `token = …`, and
+2. **Labelled secrets** — `password=…`, `api_key: …`, `token = …`, prefixed
+   labels such as `db_password: …` or `DB_PASSWORD=…`, the `passphrase`,
+   `credentials`, `private_key`, `secret_key`, `signing_key` and
+   `encryption_key` labels, and
    `scheme://user:password@host` URL credentials. Here it redacts **just the
    value**, not the label, so `password=hunter2` becomes `password=[REDACTED…]`.
    Unquoted type annotations, function calls and attribute references, plus

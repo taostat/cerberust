@@ -754,8 +754,24 @@ const SECRET_PATTERNS: [(&str, &str); 14] = [
     ("PRIVATE_KEY", r"-----BEGIN [A-Z ]*PRIVATE KEY-----"),
 ];
 
-const CREDENTIAL_LABEL: &str =
-    r"(?i)\b(?:password|passwd|pwd|secret|api[_-]?key|token|access[_-]?key)\b";
+/// The credential label words shared by the prose, JSON-key and placeholder
+/// rules. A bare `key` is deliberately absent: `primary_key`, `cache_key` and
+/// `public_key` name ordinary values.
+macro_rules! credential_words {
+    () => {
+        concat!(
+            "password|passwd|pwd|passphrase|credentials?|secret|",
+            "(?:private|secret|signing|encryption)[_-]?key|",
+            "api[_-]?key|apikey|access[_-]?key|token"
+        )
+    };
+}
+
+/// A credential label at a word start or after a `_`, `.` or `-` separator, so
+/// `password`, `db_password`, `DB_PASSWORD` and `smtp.password` all match. Only
+/// the separator is consumed, keeping the label words as the match's literal
+/// anchor; [`label_identifier_start`] recovers the full name.
+const CREDENTIAL_LABEL: &str = concat!(r"(?i)(?:\b|[_.-])(?:", credential_words!(), r")\b");
 const CREDENTIAL_ASSIGNMENT: &str = r"\s*(?:(?P<colon>:)|=)\s*";
 // A type needs recognizable syntax, or whitespace before '='. An arbitrary
 // alphanumeric value ending in '=' may be a Base64 secret.
@@ -781,7 +797,9 @@ const URL_CREDENTIAL_PATTERN: &str = r"[a-z][a-z0-9+.\-]*://[^\s:/@]+:([^\s/@]+)
 /// double-quoted string value: `"password": "..."`, `"db_password":"..."`.
 const JSON_CREDENTIAL_PATTERN: &str = concat!(
     r#""(?P<key>[A-Za-z0-9_.-]*?"#,
-    r"(?i:password|passwd|pwd|secret|api[_-]?key|apikey|access[_-]?key|token))",
+    r"(?i:",
+    credential_words!(),
+    "))",
     r#""[ \t\r\n]*:[ \t\r\n]*"(?P<value>(?:\\\S|[^"\\\s])*(?:\\$)?)(?:"|$)"#,
 );
 
@@ -1121,7 +1139,7 @@ fn detect_json_labelled_secrets(text: &str, spans: &mut Vec<Span>) {
 fn is_json_credential(key: &str, value: &str) -> bool {
     let key = key.to_ascii_lowercase();
     let value = decode_json_string(value);
-    if is_pagination_token_key(&key) || key == "pwd" && is_directory_path(&value) {
+    if is_pagination_token_key(&key) || is_path_label_value(&key, &value) {
         return false;
     }
     value.len() >= 6
@@ -1187,6 +1205,39 @@ fn decode_json_escape(chars: &mut std::str::Chars<'_>) -> Option<char> {
 
 fn json_hex_quad(chars: &mut std::str::Chars<'_>) -> Option<u32> {
     (0..4).try_fold(0, |code, _| Some(code * 16 + chars.next()?.to_digit(16)?))
+}
+
+/// `<your-private-key>`, `<api key>`, `YOUR_SECRET`, `0xYOUR_KEY`: letters-only
+/// placeholder words. Values with digits are treated as literals.
+fn is_placeholder_shape(value: &str) -> bool {
+    static RE: OnceLock<Regex> = OnceLock::new();
+    RE.get_or_init(|| structured_rule(r"^(?:<[A-Za-z _-]+>|(?:0[xX])?YOUR_[A-Z_]+)$"))
+        .is_match(value)
+}
+
+/// Start of the identifier that ends in the label matched at `head_start`:
+/// `db_password` for a match of `_password`.
+fn label_identifier_start(text: &str, head_start: usize) -> usize {
+    text[..head_start]
+        .bytes()
+        .rposition(|byte| !(byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'.' | b'-')))
+        .map_or(0, |index| index + 1)
+}
+
+/// A label directly after `${` or `:` names a variable inside a reference
+/// (`${DB_PASSWORD:-default}`, `%env(default:db.credential:NAME)%`), not an
+/// assignment.
+fn is_reference_name(before: &str) -> bool {
+    before.ends_with("${") || before.ends_with(':')
+}
+
+/// A path under a label that conventionally names a file or directory:
+/// `PWD=/home/user`, `GOOGLE_APPLICATION_CREDENTIALS=/etc/key.json`,
+/// `private_key: ./certs/server.pem`.
+fn is_path_label_value(label: &str, value: &str) -> bool {
+    let label = label.to_ascii_lowercase();
+    (label == "pwd" || label.ends_with("key") || label.contains("credential"))
+        && is_directory_path(value)
 }
 
 fn is_directory_path(value: &str) -> bool {
@@ -1490,13 +1541,8 @@ fn contains_json_redaction_sentinel(value: &str) -> bool {
 
 fn is_json_placeholder_name(value: &str) -> bool {
     static RE: OnceLock<Regex> = OnceLock::new();
-    RE.get_or_init(|| {
-        structured_rule(concat!(
-            r"^[a-z0-9_.-]*?(?:password|passwd|pwd|secret|",
-            r"api[_-]?key|access[_-]?key|token)$"
-        ))
-    })
-    .is_match(value)
+    RE.get_or_init(|| structured_rule(concat!(r"^[a-z0-9_.-]*?(?:", credential_words!(), ")$")))
+        .is_match(value)
 }
 
 /// Each validated rule's keywords, in rule order, for the shared keyword pass
@@ -1731,6 +1777,15 @@ fn detect_labelled_secrets(text: &str, spans: &mut Vec<Span>) {
     let mut cursor = 0;
     let mut chained = None;
     while let Some(head) = credential_head_rule(false).find_at(text, cursor) {
+        let label_start = label_identifier_start(text, head.start());
+        let label = text[label_start..head.end()]
+            .trim_end_matches(|ch: char| ch.is_whitespace() || ch == ':' || ch == '=');
+        if is_pagination_token_key(&label.to_ascii_lowercase())
+            || is_reference_name(&text[..label_start])
+        {
+            cursor = head.end();
+            continue;
+        }
         let index = syntax.get_or_insert_with(|| AssignmentSyntax::new(text));
         let typed_end = index.typed_head_end(head.start());
         let value_start = typed_end.unwrap_or(head.end());
@@ -1797,6 +1852,8 @@ fn detect_labelled_secrets(text: &str, spans: &mut Vec<Span>) {
         if value.len() >= 6
             && !is_non_secret_assignment_value(value, quoted.is_some(), annotation)
             && !is_public_hardhat_dev_key(value)
+            && !is_path_label_value(label, value)
+            && !is_placeholder_shape(value)
         {
             spans.push(Span::new(start, start + value.len(), "SECRET", 0.9));
         }
