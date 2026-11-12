@@ -123,6 +123,25 @@ fn prefixed_chains_preserve_labels_and_redact_only_the_final_value() {
 }
 
 #[test]
+fn compact_prefixed_chains_preserve_assignment_heads() {
+    for assignment in [
+        format!("smtp_password='{VALUE}'"),
+        format!("smtp_password=\"{VALUE}\""),
+        format!("smtp_password= {VALUE}"),
+        format!("smtp_password= auth_token='{VALUE}'"),
+        format!("app_passphrase='{VALUE}'"),
+    ] {
+        let text = format!("db_password = {assignment}\nfinished!\n");
+        assert_eq!(secret_values(&text), [VALUE], "{text}");
+        assert_streamed_values(&text, &[VALUE]);
+    }
+    let value = format!("smtp_password={VALUE}");
+    let text = format!("db_password = {value}\nfinished!\n");
+    assert_eq!(secret_values(&text), [value.as_str()]);
+    assert_streamed_values(&text, &[&value]);
+}
+
+#[test]
 fn deeply_prefixed_chains_preserve_value_spans() {
     let text = format!(
         "app_password: str = {}'{VALUE}'",

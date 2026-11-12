@@ -946,11 +946,9 @@ fn following_credential_head(value: &str, chained: bool) -> Option<usize> {
         .char_indices()
         .take_while(|(offset, _)| *offset < 6)
         .any(|(_, ch)| ch.is_whitespace() || matches!(ch, '\'' | '"' | '&'));
-    let spaced = head
-        .as_str()
-        .split_once([':', '='])
-        .is_some_and(|(label, _)| label.ends_with(char::is_whitespace));
-    if !chained && !short && !spaced {
+    let separated =
+        head.as_str().contains(char::is_whitespace) || value[head.end()..].starts_with(['\'', '"']);
+    if !chained && !short && !separated {
         return None;
     }
     credential_head_rule(false)
