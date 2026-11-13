@@ -1276,16 +1276,19 @@ fn is_reference_name(before: &str) -> bool {
 
 /// A digit-free `PascalCase` type name, optionally path-qualified
 /// (`SecretStr`, `pydantic.SecretStr`, `oauth2::ClientSecret`), that ends its
-/// field: followed by `,`, `;`, `)` or the end of the line. In
-/// `access_token: AccessToken,` the annotation names a type, not a value.
+/// field: followed by `,`, `;`, `)`, a `|` union or the end of the line. Its last
+/// segment must contain a lowercase letter, so an all-caps value is a literal.
+/// In `access_token: AccessToken,` the annotation names a type, not a value.
 fn is_pascal_case_type(value: &str, rest: &str) -> bool {
     static RE: OnceLock<Regex> = OnceLock::new();
     let name = value.trim_end_matches(')');
     let rest = rest.trim_start_matches([' ', '\t']);
     let ends_field = name.len() != value.len()
         || rest.is_empty()
-        || rest.starts_with([',', ';', ')', '\r', '\n']);
+        || rest.starts_with([',', ';', ')', '|', '\r', '\n']);
+    let last_segment = name.rsplit([':', '.']).next().unwrap_or(name);
     ends_field
+        && last_segment.bytes().any(|byte| byte.is_ascii_lowercase())
         && RE
             .get_or_init(|| structured_rule(r"^(?:[A-Za-z_]+(?:::|\.))*[A-Z][A-Za-z]*$"))
             .is_match(name)

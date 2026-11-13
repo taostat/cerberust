@@ -485,3 +485,23 @@ fn rust_path_qualified_labels_are_assignments() {
     assert_eq!(secret_values(&text), [VALUE]);
     assert_streamed_values(&format!("{text}\n"), &[VALUE]);
 }
+
+#[test]
+fn union_type_annotations_are_types_and_all_caps_values_are_literals() {
+    for text in [
+        "access_token: AccessToken | null;",
+        "api_key: ApiKey | undefined,",
+        "auth_token: JWTToken,",
+    ] {
+        assert!(
+            secret_values(text).is_empty(),
+            "{text}: {:?}",
+            secret_values(text)
+        );
+        assert_streamed_values(&format!("{text}\n"), &[]);
+    }
+    for text in ["PASSWORD: HUNTERSECRET", "db_password: HUNTERSECRET,"] {
+        assert_eq!(secret_values(text), ["HUNTERSECRET"], "{text}");
+        assert_streamed_values(&format!("{text}\n"), &["HUNTERSECRET"]);
+    }
+}
