@@ -25,7 +25,7 @@ use regex_automata::meta;
 use regex_automata::util::captures::Captures;
 use regex_automata::Input;
 
-use super::detect::{validated_secret_keywords, Span};
+use super::detect::{labelled_secret_keywords, validated_secret_keywords, Span};
 use super::gitleaks_rules::{GLOBAL_REGEXES, GLOBAL_STOPWORDS, RULES};
 
 /// Confidence of a ported-rule span. Below the crate's hand-written vendor
@@ -101,6 +101,8 @@ enum KeywordRule {
     Gitleaks(usize),
     /// An index into the validated secret rules in `detect`.
     Validated(usize),
+    /// The labelled `key: value` rule in `detect`.
+    Labelled,
 }
 
 fn add_keyword(
@@ -196,6 +198,16 @@ fn compiled() -> &'static Compiled {
                 }
             }
         }
+        for kw in labelled_secret_keywords() {
+            for variant in unicode_keyword_variants(kw) {
+                add_keyword(
+                    &mut keyword_list,
+                    &mut keyword_rules,
+                    &variant,
+                    KeywordRule::Labelled,
+                );
+            }
+        }
         let keywords = AhoCorasickBuilder::new()
             .ascii_case_insensitive(true)
             .match_kind(MatchKind::Standard)
@@ -254,10 +266,15 @@ fn hold_back_source(regex: &str) -> String {
 /// crate's validated secret rule `i` occurs. If the automaton is unavailable,
 /// every validated rule is marked so that none is skipped.
 #[must_use]
-pub(crate) fn detect(text: &str, validated_hits: &mut [bool]) -> Vec<Span> {
+pub(crate) fn detect(
+    text: &str,
+    validated_hits: &mut [bool],
+    labelled_hit: &mut bool,
+) -> Vec<Span> {
     let c = compiled();
     let Some(keywords) = &c.keywords else {
         validated_hits.fill(true);
+        *labelled_hit = true;
         return Vec::new();
     };
     // Per rule: keyword hit spans, or `None` if the rule does not run.
@@ -277,6 +294,7 @@ pub(crate) fn detect(text: &str, validated_hits: &mut [bool]) -> Vec<Span> {
                         *hit = true;
                     }
                 }
+                KeywordRule::Labelled => *labelled_hit = true,
             }
         }
     }
@@ -425,12 +443,12 @@ mod tests {
     use super::*;
 
     fn detect(text: &str) -> Vec<Span> {
-        super::detect(text, &mut [])
+        super::detect(text, &mut [], &mut false)
     }
 
     fn validated_hits(text: &str) -> Vec<bool> {
         let mut hits = vec![false; validated_secret_keywords().count()];
-        let _ = super::detect(text, &mut hits);
+        let _ = super::detect(text, &mut hits, &mut false);
         hits
     }
 
@@ -752,9 +770,11 @@ mod recall {
         let mut silent = Vec::new();
         for rule in RULES {
             let fired = if let Some(texts) = handwritten(rule.id, &mut runner) {
-                texts
-                    .iter()
-                    .any(|t| detect(t, &mut []).iter().any(|s| s.ty == rule.ty))
+                texts.iter().any(|t| {
+                    detect(t, &mut [], &mut false)
+                        .iter()
+                        .any(|s| s.ty == rule.ty)
+                })
             } else {
                 let Ok(strategy) = proptest::string::string_regex(&sampling_form(rule.regex))
                 else {
@@ -767,7 +787,9 @@ mod recall {
                 (0..40).any(|_| {
                     let sample = strategy.new_tree(&mut runner).unwrap().current();
                     let text = format!("{context}\n{sample} \n");
-                    detect(&text, &mut []).iter().any(|s| s.ty == rule.ty)
+                    detect(&text, &mut [], &mut false)
+                        .iter()
+                        .any(|s| s.ty == rule.ty)
                 })
             };
             if !fired {
