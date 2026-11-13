@@ -330,6 +330,39 @@ fn credential_mappings_preserve_properties_and_scan_nested_values() {
 }
 
 #[test]
+fn credential_mappings_preserve_leading_blank_lines_and_comments() {
+    for label in ["credentials", "app_credentials", "credential"] {
+        for gap in [
+            "\n\n",
+            "\n  \n",
+            "\n  #account configuration\n",
+            " #account configuration\n",
+            "\n\n  #account configuration\n\n",
+        ] {
+            for newline in ["\n", "\r\n"] {
+                let gap = gap.replace('\n', newline);
+                let text = format!(
+                    "{label}:{gap}  username: alice{newline}  password: '{VALUE}'{newline}finished!{newline}"
+                );
+                assert_eq!(secret_values(&text), [VALUE], "{text}");
+                assert_streamed_values(&text, &[VALUE]);
+                let text = format!("{label}:{gap}  username: alice{newline}finished!{newline}");
+                assert!(secret_values(&text).is_empty(), "{text}");
+                assert_streamed_values(&text, &[]);
+            }
+        }
+    }
+    let text = format!("credentials: #password='{VALUE}'\n  username: alice\nfinished!\n");
+    assert_eq!(secret_values(&text), [VALUE]);
+    assert_streamed_values(&text, &[VALUE]);
+    for assignment in ["=", ":", " = '", ": str = '"] {
+        let text = format!("credentials{assignment}#private9'\nfinished!\n");
+        assert_eq!(secret_values(&text), ["#private9"], "{text}");
+        assert_streamed_values(&text, &["#private9"]);
+    }
+}
+
+#[test]
 fn tokenizer_special_tokens_are_not_credentials() {
     for (label, value) in [
         ("pad_token", "<|endoftext|>"),
@@ -406,4 +439,49 @@ fn streamed_prefixed_labels_never_flush_part_of_the_value() {
             "chunk {chunk}: {emitted}"
         );
     }
+}
+
+#[test]
+fn pascal_case_type_annotations_are_not_values() {
+    for text in [
+        "db_password: SecretStr",
+        "db_password: SecretStr\nport: 5432\n",
+        "pub access_token: AccessToken,",
+        "client_secret: ClientSecret;",
+        "fn login(api_key: ApiKey) {}",
+        "signing_key: jwt::SigningKey,",
+        "password: pydantic.SecretStr",
+    ] {
+        assert!(
+            secret_values(text).is_empty(),
+            "{text}: {:?}",
+            secret_values(text)
+        );
+        assert_streamed_values(&format!("{text}\n"), &[]);
+    }
+    for text in [
+        "db_password: Tr0ub4dor",
+        "pub access_token: Tr0ub4dor,",
+        "client_secret: Tr0ub4dor;",
+        "db_password: SecretStr extra",
+        "db_password = SecretStr",
+    ] {
+        let value = text
+            .split([':', '='])
+            .nth(1)
+            .unwrap()
+            .trim()
+            .trim_end_matches([',', ';'])
+            .split(' ')
+            .next()
+            .unwrap();
+        assert_eq!(secret_values(text), [value], "{text}");
+    }
+}
+
+#[test]
+fn rust_path_qualified_labels_are_assignments() {
+    let text = format!("std::string Config::password = \"{VALUE}\";");
+    assert_eq!(secret_values(&text), [VALUE]);
+    assert_streamed_values(&format!("{text}\n"), &[VALUE]);
 }

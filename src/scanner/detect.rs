@@ -797,7 +797,7 @@ const CREDENTIAL_OBJECT_HEAD: &str = concat!(
     r"|'(?:\\[^\r\n]|[^'\\\r\n])*')\s*:)"
 );
 const CREDENTIAL_MAPPING_HEAD: &str = concat!(
-    r#"[ \t]*:[ \t]*\r?\n[ \t]+(?:[A-Za-z_$][A-Za-z0-9_$.-]*|"(?:\\[^\r\n]|[^"\\\r\n])*""#,
+    r#"[ \t]*:(?:[ \t]*\r?\n)+[ \t]+(?:[A-Za-z_$][A-Za-z0-9_$.-]*|"(?:\\[^\r\n]|[^"\\\r\n])*""#,
     r"|'(?:\\[^\r\n]|[^'\\\r\n])*')[ \t]*:[ \t\r\n]"
 );
 const URL_CREDENTIAL_PATTERN: &str = r"[a-z][a-z0-9+.\-]*://[^\s:/@]+:([^\s/@]+)@";
@@ -1271,7 +1271,24 @@ fn label_identifier_start(text: &str, head_start: usize) -> usize {
 /// (`${DB_PASSWORD:-default}`, `%env(default:db.credential:NAME)%`), not an
 /// assignment.
 fn is_reference_name(before: &str) -> bool {
-    before.ends_with("${") || before.ends_with(':')
+    before.ends_with("${") || before.ends_with(':') && !before.ends_with("::")
+}
+
+/// A digit-free `PascalCase` type name, optionally path-qualified
+/// (`SecretStr`, `pydantic.SecretStr`, `oauth2::ClientSecret`), that ends its
+/// field: followed by `,`, `;`, `)` or the end of the line. In
+/// `access_token: AccessToken,` the annotation names a type, not a value.
+fn is_pascal_case_type(value: &str, rest: &str) -> bool {
+    static RE: OnceLock<Regex> = OnceLock::new();
+    let name = value.trim_end_matches(')');
+    let rest = rest.trim_start_matches([' ', '\t']);
+    let ends_field = name.len() != value.len()
+        || rest.is_empty()
+        || rest.starts_with([',', ';', ')', '\r', '\n']);
+    ends_field
+        && RE
+            .get_or_init(|| structured_rule(r"^(?:[A-Za-z_]+(?:::|\.))*[A-Z][A-Za-z]*$"))
+            .is_match(name)
 }
 
 /// A path under a label that conventionally names a file or directory:
@@ -1322,6 +1339,13 @@ fn credential_properties_start(
         .to_ascii_lowercase();
     if !(label.ends_with("credential") || label.ends_with("credentials")) {
         return None;
+    }
+    if value_start == head.end()
+        && head.as_str().trim_end().ends_with(':')
+        && head.as_str().ends_with(char::is_whitespace)
+        && text[value_start..].starts_with('#')
+    {
+        return Some(value_start + 1);
     }
     if OBJECT
         .get_or_init(|| structured_rule(&format!(r"\A{CREDENTIAL_OBJECT_HEAD}")))
@@ -1971,6 +1995,9 @@ fn detect_labelled_secrets(text: &str, spans: &mut Vec<Span>) {
             && !is_path_label_value(label, value)
             && !is_fetch_credentials_mode(label, value)
             && !is_tokenizer_special_token(label, value)
+            && !(annotation
+                && quoted.is_none()
+                && is_pascal_case_type(value, &text[start + value.len()..]))
         {
             spans.push(Span::new(start, start + value.len(), "SECRET", 0.9));
         }
