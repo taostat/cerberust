@@ -85,7 +85,10 @@ Four layers of detection, all emitting spans into the shared redact path:
    placeholders keep their names. Ported rules name their placeholders after
    the gitleaks rule id (`github-fine-grained-pat` → `GITHUB_FINE_GRAINED_PAT`).
 
-2. **Labelled secrets** — `password=…`, `api_key: …`, `token = …`, and
+2. **Labelled secrets** — `password=…`, `api_key: …`, `token = …`, prefixed
+   labels such as `db_password: …` or `DB_PASSWORD=…`, the `passphrase`,
+   `credentials`, `private_key`, `secret_key`, `signing_key` and
+   `encryption_key` labels, and
    `scheme://user:password@host` URL credentials. Here it redacts **just the
    value**, not the label, so `password=hunter2` becomes `password=[REDACTED…]`.
    Unquoted type annotations, function calls and attribute references, plus
@@ -96,6 +99,10 @@ Four layers of detection, all emitting spans into the shared redact path:
    For example, `password: Optional[str] = None`,
    `token = self.tokenizer(text)`, `password=${DB_PASSWORD}` and
    `token=YOUR_TOKEN` do not produce labelled-secret redactions.
+   Fetch credential modes and bracketed tokenizer special-token settings are
+   also left intact.
+   Credential objects written as `{name: value}` and indented YAML mappings
+   retain their property names; nested labelled secrets are still scanned.
    A double-quoted JSON key ending in a credential label, such as
    `{"password": "…"}` or `"db_password": "…"`, also produces value-only spans
    when its decoded value is a single-token string. `null`, booleans, numbers,

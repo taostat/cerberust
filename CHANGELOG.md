@@ -7,6 +7,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.4] - 2026-11-12
+
+### Added
+
+- Labelled-secret matching accepts an identifier prefix ending in `_`, `.` or
+  `-` before a credential label, so `db_password: '...'`, `DB_PASSWORD=...`,
+  `smtp.password = ...` and `stripe_api_key=...` redact their values, in
+  unary scans and streaming hold-back. Pagination keys such as `next_token`
+  and labels inside `${NAME:-default}`-style references are skipped.
+- New credential labels for both the prose and JSON-key rules: `passphrase`,
+  `credential`/`credentials`, `private_key`, `secret_key`, `signing_key`,
+  `encryption_key` (each with optional `_`/`-`), and `apikey` in prose. A bare
+  `key` suffix is not a label, so `primary_key`, `cache_key` and `public_key`
+  are unchanged. File paths under `*_key` and `credentials` labels, and
+  letters-only `<placeholder>` / `YOUR_...` values, are left intact.
+  Fetch credential modes and bracketed tokenizer special-token settings are
+  also preserved.
+  Credential objects written as `{name: value}` and indented YAML mappings
+  retain their property names; nested labelled secrets are still scanned.
+
 ## [0.3.3] - 2026-11-12
 
 ### Changed
@@ -256,7 +276,8 @@ Initial public release.
 - **Benchmark harness** (`benchmarks/`) — head-to-head precision/recall and
   throughput against Python's `llm-guard` over a shared labelled corpus.
 
-[Unreleased]: https://github.com/taostat/cerberust/compare/v0.3.3...HEAD
+[Unreleased]: https://github.com/taostat/cerberust/compare/v0.3.4...HEAD
+[0.3.4]: https://github.com/taostat/cerberust/compare/v0.3.3...v0.3.4
 [0.3.3]: https://github.com/taostat/cerberust/compare/v0.3.2...v0.3.3
 [0.3.2]: https://github.com/taostat/cerberust/compare/v0.3.1...v0.3.2
 [0.3.1]: https://github.com/taostat/cerberust/compare/v0.3.0...v0.3.1
