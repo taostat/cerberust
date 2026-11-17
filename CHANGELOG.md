@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.5] - 2026-11-17
+
+### Removed
+
+- The 0.3.4 labelled-secret additions: identifier prefixes before a credential
+  label, the `passphrase`, `credential(s)`, `private_key`, `secret_key`,
+  `signing_key`, `encryption_key` and prose `apikey` labels, and their value
+  exemptions. Secret detection matches 0.3.3.
+
+### Changed
+
+- When the high-entropy backstop flags an `<identifier>=<value>` token, such as
+  `DB_PASSWORD=...`, it redacts only the value and keeps the name. Which tokens
+  are flagged is unchanged; tokens without an identifier name and base64
+  padding are still redacted whole.
+
 ## [0.3.4] - 2026-11-12
 
 ### Added
@@ -276,7 +292,8 @@ Initial public release.
 - **Benchmark harness** (`benchmarks/`) — head-to-head precision/recall and
   throughput against Python's `llm-guard` over a shared labelled corpus.
 
-[Unreleased]: https://github.com/taostat/cerberust/compare/v0.3.4...HEAD
+[Unreleased]: https://github.com/taostat/cerberust/compare/v0.3.5...HEAD
+[0.3.5]: https://github.com/taostat/cerberust/compare/v0.3.4...v0.3.5
 [0.3.4]: https://github.com/taostat/cerberust/compare/v0.3.3...v0.3.4
 [0.3.3]: https://github.com/taostat/cerberust/compare/v0.3.2...v0.3.3
 [0.3.2]: https://github.com/taostat/cerberust/compare/v0.3.1...v0.3.2
