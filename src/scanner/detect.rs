@@ -2667,6 +2667,11 @@ fn is_identifier(value: &str) -> bool {
 fn entropy_backstop(text: &str) -> Vec<Span> {
     let mut spans = Vec::new();
     for (start, tok) in split_with_offsets(text) {
+        // A flagged value is at least 20 bytes, so a shorter token cannot
+        // qualify with or without a name; skip it before the separator search.
+        if tok.len() < 20 {
+            continue;
+        }
         let offset = assignment_value_offset(tok).unwrap_or(0);
         let value = &tok[offset..];
         // Test the cheap character-class predicates before computing entropy: a
