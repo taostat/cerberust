@@ -130,6 +130,8 @@ Four layers of detection, all emitting spans into the shared redact path:
    Bitcoin P2PKH/P2SH Base58Check addresses, and syntactically valid SRI digests
    are also left intact. The
    character-class and identifier checks run before the entropy calculation.
+   In an `<identifier>=<value>` or `<identifier>:<value>` token such as
+   `DB_PASSWORD=…`, only the value is measured and redacted; the name is kept.
 
 ## Structural crypto formats
 

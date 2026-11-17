@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.5] - 2026-11-17
+
+### Fixed
+
+- The high-entropy secret backstop redacts only the value of an
+  `<identifier>=<value>` or `<identifier>:<value>` token, such as
+  `DB_PASSWORD=...` or `FOO=...`, and keeps the name; entropy is measured on
+  the value. Tokens without an identifier name, base64 padding and URLs are
+  still treated as one token.
+
 ## [0.3.4] - 2026-11-12
 
 ### Added
@@ -276,7 +286,8 @@ Initial public release.
 - **Benchmark harness** (`benchmarks/`) — head-to-head precision/recall and
   throughput against Python's `llm-guard` over a shared labelled corpus.
 
-[Unreleased]: https://github.com/taostat/cerberust/compare/v0.3.4...HEAD
+[Unreleased]: https://github.com/taostat/cerberust/compare/v0.3.5...HEAD
+[0.3.5]: https://github.com/taostat/cerberust/compare/v0.3.4...v0.3.5
 [0.3.4]: https://github.com/taostat/cerberust/compare/v0.3.3...v0.3.4
 [0.3.3]: https://github.com/taostat/cerberust/compare/v0.3.2...v0.3.3
 [0.3.2]: https://github.com/taostat/cerberust/compare/v0.3.1...v0.3.2

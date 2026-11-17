@@ -2667,20 +2667,40 @@ fn is_identifier(value: &str) -> bool {
 fn entropy_backstop(text: &str) -> Vec<Span> {
     let mut spans = Vec::new();
     for (start, tok) in split_with_offsets(text) {
-        let len = tok.len();
+        let offset = assignment_value_offset(tok).unwrap_or(0);
+        let value = &tok[offset..];
         // Test the cheap character-class predicates before computing entropy: a
         // long prose word lacks diversity, so it never pays for the entropy scan.
-        if len >= 20
-            && is_base64ish(tok)
-            && !is_hexish(tok)
-            && has_character_class_diversity(tok)
-            && !is_entropy_exempt_token(tok)
-            && shannon_entropy(tok) >= 4.5
+        if value.len() >= 20
+            && is_base64ish(value)
+            && !is_hexish(value)
+            && has_character_class_diversity(value)
+            && !is_entropy_exempt_token(value)
+            && shannon_entropy(value) >= 4.5
         {
-            spans.push(Span::new(start, start + len, "SECRET", 0.7));
+            spans.push(Span::new(start + offset, start + tok.len(), "SECRET", 0.7));
         }
     }
     spans
+}
+
+/// Where the value starts in an `<identifier>=<value>` or `<identifier>:<value>`
+/// token (`DB_PASSWORD=...`), so the backstop measures and redacts the value
+/// and leaves the name. `None` for base64 padding (`...==`), `::` paths and URLs
+/// (`scheme://`). A `user:pass@host` value is never base64-like, so the
+/// backstop does not flag it either way.
+fn assignment_value_offset(tok: &str) -> Option<usize> {
+    let separator = tok.find(['=', ':'])?;
+    let (name, value) = (&tok[..separator], &tok[separator + 1..]);
+    let mut name_bytes = name.bytes();
+    let identifier = name_bytes
+        .next()
+        .is_some_and(|byte| byte.is_ascii_alphabetic() || byte == b'_')
+        && name_bytes
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'.' | b'-'));
+    let url_like = tok.as_bytes()[separator] == b':' && value.starts_with("//");
+    (identifier && !value.is_empty() && !value.starts_with(['=', ':']) && !url_like)
+        .then_some(separator + 1)
 }
 
 /// Split on ASCII whitespace, yielding `(byte_start, token)`.
