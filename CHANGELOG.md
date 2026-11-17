@@ -13,8 +13,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - The 0.3.4 labelled-secret additions: identifier prefixes before a credential
   label, the `passphrase`, `credential(s)`, `private_key`, `secret_key`,
-  `signing_key`, `encryption_key` and prose `apikey` labels, and their value
-  exemptions. Secret detection matches 0.3.3.
+  `signing_key` and `encryption_key` labels, and their value exemptions.
+  Secret detection matches 0.3.3.
 
 ### Changed
 
