@@ -754,24 +754,8 @@ const SECRET_PATTERNS: [(&str, &str); 14] = [
     ("PRIVATE_KEY", r"-----BEGIN [A-Z ]*PRIVATE KEY-----"),
 ];
 
-/// The credential label words shared by the prose, JSON-key and placeholder
-/// rules. A bare `key` is deliberately absent: `primary_key`, `cache_key` and
-/// `public_key` name ordinary values.
-macro_rules! credential_words {
-    () => {
-        concat!(
-            "password|passwd|pwd|passphrase|credentials?|secret|",
-            "(?:private|secret|signing|encryption)[_-]?key|",
-            "api[_-]?key|apikey|access[_-]?key|token"
-        )
-    };
-}
-
-/// A credential label at a word start or after a `_`, `.` or `-` separator, so
-/// `password`, `db_password`, `DB_PASSWORD` and `smtp.password` all match. Only
-/// the separator is consumed, keeping the label words as the match's literal
-/// anchor; [`label_identifier_start`] recovers the full name.
-const CREDENTIAL_LABEL: &str = concat!(r"(?i)(?:\b|[_.-])(?:", credential_words!(), r")\b");
+const CREDENTIAL_LABEL: &str =
+    r"(?i)\b(?:password|passwd|pwd|secret|api[_-]?key|token|access[_-]?key)\b";
 const CREDENTIAL_ASSIGNMENT: &str = r"\s*(?:(?P<colon>:)|=)\s*";
 // A type needs recognizable syntax, or whitespace before '='. An arbitrary
 // alphanumeric value ending in '=' may be a Base64 secret.
@@ -788,26 +772,16 @@ const CREDENTIAL_VALUE: &str = concat!(
     r"\s*,\s*(?:default\s*=\s*)?)?",
     r#"(?:"(?P<double>(?:\\[^\r\n]|[^"\\\r\n])*\\?)(?:"|[\r\n]|$)"#,
     r"|'(?P<single>(?:\\[^\r\n]|[^'\\\r\n])*\\?)(?:'|[\r\n]|$)",
-    r#"|(?P<template>(?:\{\{[ \t]*[a-z_][a-z0-9_.]*[ \t]*\}\}|<[A-Za-z _-]+>)[^\s"'&]*)"#,
+    r#"|(?P<template>\{\{[ \t]*[a-z_][a-z0-9_.]*[ \t]*\}\}[^\s"'&]*)"#,
     // Balanced expression bounds are indexed separately.
     r#"|(?P<bare>[a-z_][a-z0-9_.:]*[ \t]*[\[(<]|[^\s"'&]+))"#,
-);
-const CREDENTIAL_OBJECT_HEAD: &str = concat!(
-    r#"\{\s*(?:[A-Za-z_$][A-Za-z0-9_$]*\s*[:,]|(?:"(?:\\[^\r\n]|[^"\\\r\n])*""#,
-    r"|'(?:\\[^\r\n]|[^'\\\r\n])*')\s*:)"
-);
-const CREDENTIAL_MAPPING_HEAD: &str = concat!(
-    r#"[ \t]*:(?:[ \t]*\r?\n)+[ \t]+(?:[A-Za-z_$][A-Za-z0-9_$.-]*|"(?:\\[^\r\n]|[^"\\\r\n])*""#,
-    r"|'(?:\\[^\r\n]|[^'\\\r\n])*')[ \t]*:[ \t\r\n]"
 );
 const URL_CREDENTIAL_PATTERN: &str = r"[a-z][a-z0-9+.\-]*://[^\s:/@]+:([^\s/@]+)@";
 /// A double-quoted object key that ends in a credential label, followed by a
 /// double-quoted string value: `"password": "..."`, `"db_password":"..."`.
 const JSON_CREDENTIAL_PATTERN: &str = concat!(
     r#""(?P<key>[A-Za-z0-9_.-]*?"#,
-    r"(?i:",
-    credential_words!(),
-    "))",
+    r"(?i:password|passwd|pwd|secret|api[_-]?key|apikey|access[_-]?key|token))",
     r#""[ \t\r\n]*:[ \t\r\n]*"(?P<value>(?:\\\S|[^"\\\s])*(?:\\$)?)(?:"|$)"#,
 );
 
@@ -845,9 +819,6 @@ pub fn secret_pattern_sources() -> Vec<String> {
         )
         .chain([
             credential_pattern(true).replace(r"\b", ""),
-            format!("{CREDENTIAL_LABEL}(?:{CREDENTIAL_TYPE}|{CREDENTIAL_ASSIGNMENT}){CREDENTIAL_OBJECT_HEAD}")
-                .replace(r"\b", ""),
-            format!("{CREDENTIAL_LABEL}{CREDENTIAL_MAPPING_HEAD}").replace(r"\b", ""),
             URL_CREDENTIAL_PATTERN.to_owned(),
             JSON_CREDENTIAL_PATTERN.to_owned(),
         ])
@@ -900,7 +871,7 @@ fn credential_head_rule(anchored: bool) -> &'static Regex {
     static ANCHORED: OnceLock<Regex> = OnceLock::new();
     let re = if anchored { &ANCHORED } else { &RE };
     re.get_or_init(|| {
-        let anchor = if anchored { r"\A[A-Za-z0-9_.-]*?" } else { "" };
+        let anchor = if anchored { r"\A" } else { "" };
         structured_rule(&format!(
             "{anchor}{CREDENTIAL_LABEL}{CREDENTIAL_ASSIGNMENT}"
         ))
@@ -951,20 +922,12 @@ pub(crate) fn expression_hold_floor(buf: &[u8]) -> usize {
         .unwrap_or(buf.len())
 }
 
-fn following_credential_head(value: &str, chained: bool) -> Option<usize> {
-    let head = credential_head_rule(true).find(value)?;
+fn follows_credential_chain(value: &str, chained: bool) -> bool {
     let short = value
         .char_indices()
         .take_while(|(offset, _)| *offset < 6)
         .any(|(_, ch)| ch.is_whitespace() || matches!(ch, '\'' | '"' | '&'));
-    let separated =
-        head.as_str().contains(char::is_whitespace) || value[head.end()..].starts_with(['\'', '"']);
-    if !chained && !short && !separated {
-        return None;
-    }
-    credential_head_rule(false)
-        .find(head.as_str())
-        .map(|label| label.start())
+    (chained || short) && credential_head_rule(true).is_match(value)
 }
 
 fn labelled_expression_bounds(text: &str) -> Vec<(usize, usize, bool)> {
@@ -983,9 +946,9 @@ fn labelled_expression_bounds(text: &str) -> Vec<(usize, usize, bool)> {
         let typed_end = index.typed_head_end(head.start());
         let value_start = typed_end.unwrap_or(head.end());
         let in_chain = typed_end.is_some() || typed_chain;
-        if let Some(offset) = following_credential_head(&text[value_start..], in_chain) {
+        if follows_credential_chain(&text[value_start..], in_chain) {
             chain_start.get_or_insert(head.start());
-            cursor = value_start + offset;
+            cursor = value_start;
             chained = Some(cursor);
             typed_chain = in_chain;
             continue;
@@ -1117,8 +1080,7 @@ impl QuotedValue {
 #[must_use]
 pub fn detect_secrets(text: &str) -> Vec<Span> {
     let mut validated_hits = vec![false; ADDITIONAL_SECRET_PATTERNS.len()];
-    let mut labelled_hit = false;
-    let mut spans = gitleaks::detect(text, &mut validated_hits, &mut labelled_hit);
+    let mut spans = gitleaks::detect(text, &mut validated_hits);
     spans.extend(bip39::detect(text));
     for rule in secret_rules() {
         for m in rule.re.find_iter(text) {
@@ -1126,9 +1088,7 @@ pub fn detect_secrets(text: &str) -> Vec<Span> {
         }
     }
     detect_validated_secrets(text, &validated_hits, &mut spans);
-    if labelled_hit {
-        detect_labelled_secrets(text, &mut spans);
-    }
+    detect_labelled_secrets(text, &mut spans);
     detect_json_labelled_secrets(text, &mut spans);
     for caps in url_credential_rule().captures_iter(text) {
         if let Some(v) = caps.get(1) {
@@ -1161,7 +1121,7 @@ fn detect_json_labelled_secrets(text: &str, spans: &mut Vec<Span>) {
 fn is_json_credential(key: &str, value: &str) -> bool {
     let key = key.to_ascii_lowercase();
     let value = decode_json_string(value);
-    if is_pagination_token_key(&key) || is_path_label_value(&key, &value) {
+    if is_pagination_token_key(&key) || key == "pwd" && is_directory_path(&value) {
         return false;
     }
     value.len() >= 6
@@ -1170,7 +1130,6 @@ fn is_json_credential(key: &str, value: &str) -> bool {
         && !is_non_secret_assignment_value(&value, true, false)
         && !is_public_hardhat_dev_key(&value)
         && !is_json_placeholder_value(&value)
-        && !is_fetch_credentials_mode(&key, &value)
         && !is_json_type_hint(&value)
         && !is_json_reference(&value)
 }
@@ -1228,155 +1187,6 @@ fn decode_json_escape(chars: &mut std::str::Chars<'_>) -> Option<char> {
 
 fn json_hex_quad(chars: &mut std::str::Chars<'_>) -> Option<u32> {
     (0..4).try_fold(0, |code, _| Some(code * 16 + chars.next()?.to_digit(16)?))
-}
-
-/// `<your-private-key>`, `<api key>`, `YOUR_SECRET`, `0xYOUR_KEY`: letters-only
-/// placeholder words. Values with digits are treated as literals.
-fn is_placeholder_shape(value: &str) -> bool {
-    static RE: OnceLock<Regex> = OnceLock::new();
-    RE.get_or_init(|| structured_rule(r"^(?:<[A-Za-z _-]+>|(?:0[xX])?YOUR_[A-Z_]+)$"))
-        .is_match(value)
-}
-
-/// Literals of which every [`CREDENTIAL_LABEL`] match contains at least one,
-/// for the shared keyword pass in [`gitleaks::detect`]. The labelled rule runs
-/// only when one occurs.
-pub(super) fn labelled_secret_keywords() -> [&'static str; 12] {
-    [
-        "password",
-        "passwd",
-        "pwd",
-        "passphrase",
-        "credential",
-        "secret",
-        "private",
-        "signing",
-        "encryption",
-        "api",
-        "access",
-        "token",
-    ]
-}
-
-/// Start of the identifier that ends in the label matched at `head_start`:
-/// `db_password` for a match of `_password`.
-fn label_identifier_start(text: &str, head_start: usize) -> usize {
-    text[..head_start]
-        .bytes()
-        .rposition(|byte| !(byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'.' | b'-')))
-        .map_or(0, |index| index + 1)
-}
-
-/// A label directly after `${` or `:` names a variable inside a reference
-/// (`${DB_PASSWORD:-default}`, `%env(default:db.credential:NAME)%`), not an
-/// assignment.
-fn is_reference_name(before: &str) -> bool {
-    before.ends_with("${") || before.ends_with(':') && !before.ends_with("::")
-}
-
-/// A digit-free `PascalCase` type name, optionally path-qualified
-/// (`SecretStr`, `pydantic.SecretStr`, `oauth2::ClientSecret`), that ends its
-/// field: followed by `,`, `;`, `)`, a `|` union or the end of the line. Its last
-/// segment must contain a lowercase letter, so an all-caps value is a literal.
-/// In `access_token: AccessToken,` the annotation names a type, not a value.
-fn is_pascal_case_type(value: &str, rest: &str) -> bool {
-    static RE: OnceLock<Regex> = OnceLock::new();
-    let name = value.trim_end_matches(')');
-    let rest = rest.trim_start_matches([' ', '\t']);
-    let ends_field = name.len() != value.len()
-        || rest.is_empty()
-        || rest.starts_with([',', ';', ')', '|', '\r', '\n']);
-    let last_segment = name.rsplit([':', '.']).next().unwrap_or(name);
-    ends_field
-        && last_segment.bytes().any(|byte| byte.is_ascii_lowercase())
-        && RE
-            .get_or_init(|| structured_rule(r"^(?:[A-Za-z_]+(?:::|\.))*[A-Z][A-Za-z]*$"))
-            .is_match(name)
-}
-
-/// A path under a label that conventionally names a file or directory:
-/// `PWD=/home/user`, `GOOGLE_APPLICATION_CREDENTIALS=/etc/key.json`,
-/// `private_key: ./certs/server.pem`.
-fn is_path_label_value(label: &str, value: &str) -> bool {
-    let label = label.to_ascii_lowercase();
-    let file_label =
-        label.ends_with("key") || label.ends_with("credential") || label.ends_with("credentials");
-    (label == "pwd" || file_label) && is_directory_path(value)
-        || file_label && is_relative_file_path(value)
-}
-
-fn is_relative_file_path(value: &str) -> bool {
-    let Some((directory, file)) = value.rsplit_once(['/', '\\']) else {
-        return false;
-    };
-    let Some((name, extension)) = file.rsplit_once('.') else {
-        return false;
-    };
-    !directory.is_empty()
-        && !name.is_empty()
-        && !extension.is_empty()
-        && extension.bytes().all(|byte| byte.is_ascii_alphanumeric())
-        && value
-            .chars()
-            .all(|ch| ch.is_alphanumeric() || matches!(ch, '_' | '-' | '.' | '/' | '\\' | ' '))
-}
-
-fn is_fetch_credentials_mode(label: &str, value: &str) -> bool {
-    label
-        .rsplit('.')
-        .next()
-        .is_some_and(|name| name.eq_ignore_ascii_case("credentials"))
-        && matches!(value, "include" | "omit" | "same-origin")
-}
-
-fn credential_properties_start(
-    text: &str,
-    head: regex::Match<'_>,
-    value_start: usize,
-) -> Option<usize> {
-    static OBJECT: OnceLock<Regex> = OnceLock::new();
-    static MAPPING: OnceLock<Regex> = OnceLock::new();
-    let label = head
-        .as_str()
-        .trim_end_matches(|ch: char| ch.is_whitespace() || ch == ':' || ch == '=')
-        .to_ascii_lowercase();
-    if !(label.ends_with("credential") || label.ends_with("credentials")) {
-        return None;
-    }
-    if value_start == head.end()
-        && head.as_str().trim_end().ends_with(':')
-        && head.as_str().ends_with(char::is_whitespace)
-        && text[value_start..].starts_with('#')
-    {
-        return Some(value_start + 1);
-    }
-    if OBJECT
-        .get_or_init(|| structured_rule(&format!(r"\A{CREDENTIAL_OBJECT_HEAD}")))
-        .is_match(&text[value_start..])
-    {
-        return Some(value_start + 1);
-    }
-    MAPPING
-        .get_or_init(|| structured_rule(&format!(r"\A{CREDENTIAL_LABEL}{CREDENTIAL_MAPPING_HEAD}")))
-        .is_match(&text[head.start()..])
-        .then_some(value_start)
-}
-
-fn is_tokenizer_special_token(label: &str, value: &str) -> bool {
-    let label = label.to_ascii_lowercase();
-    matches!(
-        label.rsplit('.').next(),
-        Some(
-            "bos_token"
-                | "eos_token"
-                | "unk_token"
-                | "sep_token"
-                | "pad_token"
-                | "cls_token"
-                | "mask_token"
-        )
-    ) && (value.starts_with('<') && value.ends_with('>')
-        || value.starts_with('[') && value.ends_with(']'))
 }
 
 fn is_directory_path(value: &str) -> bool {
@@ -1680,8 +1490,13 @@ fn contains_json_redaction_sentinel(value: &str) -> bool {
 
 fn is_json_placeholder_name(value: &str) -> bool {
     static RE: OnceLock<Regex> = OnceLock::new();
-    RE.get_or_init(|| structured_rule(concat!(r"^[a-z0-9_.-]*?(?:", credential_words!(), ")$")))
-        .is_match(value)
+    RE.get_or_init(|| {
+        structured_rule(concat!(
+            r"^[a-z0-9_.-]*?(?:password|passwd|pwd|secret|",
+            r"api[_-]?key|access[_-]?key|token)$"
+        ))
+    })
+    .is_match(value)
 }
 
 /// Each validated rule's keywords, in rule order, for the shared keyword pass
@@ -1916,29 +1731,16 @@ fn detect_labelled_secrets(text: &str, spans: &mut Vec<Span>) {
     let mut cursor = 0;
     let mut chained = None;
     while let Some(head) = credential_head_rule(false).find_at(text, cursor) {
-        let label_start = label_identifier_start(text, head.start());
-        let label = text[label_start..head.end()]
-            .trim_end_matches(|ch: char| ch.is_whitespace() || ch == ':' || ch == '=');
-        if is_pagination_token_key(&label.to_ascii_lowercase())
-            || is_reference_name(&text[..label_start])
-        {
-            cursor = head.end();
-            continue;
-        }
         let index = syntax.get_or_insert_with(|| AssignmentSyntax::new(text));
         let typed_end = index.typed_head_end(head.start());
         let value_start = typed_end.unwrap_or(head.end());
         let in_chain = typed_end.is_some() || chained == Some(head.start());
-        if let Some(offset) = following_credential_head(&text[value_start..], in_chain) {
-            cursor = value_start + offset;
+        if follows_credential_chain(&text[value_start..], in_chain) {
+            cursor = value_start;
             chained = in_chain.then_some(cursor);
             continue;
         }
         chained = None;
-        if let Some(start) = credential_properties_start(text, head, value_start) {
-            cursor = start;
-            continue;
-        }
         let Some(caps) = labelled_secret_rule(typed_end.is_some()).captures_at(text, head.start())
         else {
             break;
@@ -1995,12 +1797,6 @@ fn detect_labelled_secrets(text: &str, spans: &mut Vec<Span>) {
         if value.len() >= 6
             && !is_non_secret_assignment_value(value, quoted.is_some(), annotation)
             && !is_public_hardhat_dev_key(value)
-            && !is_path_label_value(label, value)
-            && !is_fetch_credentials_mode(label, value)
-            && !is_tokenizer_special_token(label, value)
-            && !(annotation
-                && quoted.is_none()
-                && is_pascal_case_type(value, &text[start + value.len()..]))
         {
             spans.push(Span::new(start, start + value.len(), "SECRET", 0.9));
         }
@@ -2572,8 +2368,7 @@ fn is_non_secret_assignment_value(value: &str, quoted: bool, annotation: bool) -
             | "<your token>"
             | "<your secret>"
             | "<your api key>"
-    ) || is_placeholder_shape(reference)
-        || assignment_reference_rule().is_match(reference)
+    ) || assignment_reference_rule().is_match(reference)
     {
         return true;
     }
@@ -2667,20 +2462,35 @@ fn is_identifier(value: &str) -> bool {
 fn entropy_backstop(text: &str) -> Vec<Span> {
     let mut spans = Vec::new();
     for (start, tok) in split_with_offsets(text) {
-        let len = tok.len();
         // Test the cheap character-class predicates before computing entropy: a
         // long prose word lacks diversity, so it never pays for the entropy scan.
-        if len >= 20
+        if tok.len() >= 20
             && is_base64ish(tok)
             && !is_hexish(tok)
             && has_character_class_diversity(tok)
             && !is_entropy_exempt_token(tok)
             && shannon_entropy(tok) >= 4.5
         {
-            spans.push(Span::new(start, start + len, "SECRET", 0.7));
+            let offset = assignment_value_offset(tok).unwrap_or(0);
+            spans.push(Span::new(start + offset, start + tok.len(), "SECRET", 0.7));
         }
     }
     spans
+}
+
+/// Where the value starts in a flagged `<identifier>=<value>` token
+/// (`DB_PASSWORD=...`), so the redaction keeps the name. The whole token is
+/// still what qualifies for the backstop. `None` for base64 padding (`...==`)
+/// and tokens whose prefix is not an identifier.
+fn assignment_value_offset(tok: &str) -> Option<usize> {
+    let separator = tok.find('=')?;
+    let (name, value) = (&tok[..separator], &tok[separator + 1..]);
+    let mut name_bytes = name.bytes();
+    let identifier = name_bytes
+        .next()
+        .is_some_and(|byte| byte.is_ascii_alphabetic() || byte == b'_')
+        && name_bytes.all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-'));
+    (identifier && !value.is_empty() && !value.starts_with('=')).then_some(separator + 1)
 }
 
 /// Split on ASCII whitespace, yielding `(byte_start, token)`.
@@ -2775,7 +2585,7 @@ mod tests {
             format!("ſolana={}", bs58::encode([7; 64]).into_string()),
         ] {
             let mut hits = vec![false; ADDITIONAL_SECRET_PATTERNS.len()];
-            let _ = gitleaks::detect(&text, &mut hits, &mut false);
+            let _ = gitleaks::detect(&text, &mut hits);
             let mut expected = Vec::new();
             detect_validated_secrets(&text, &vec![true; hits.len()], &mut expected);
             assert!(
@@ -2807,34 +2617,10 @@ mod tests {
                 let sample = strategy.new_tree(&mut runner).unwrap().current();
                 assert!(rule.re.is_match(&sample), "invalid sample: {sample:?}");
                 let mut hits = vec![false; ADDITIONAL_SECRET_PATTERNS.len()];
-                let _ = gitleaks::detect(&sample, &mut hits, &mut false);
+                let _ = gitleaks::detect(&sample, &mut hits);
                 assert!(hits[index], "rule {} missed sample {sample:?}", rule.ty);
             }
         }
-    }
-
-    #[test]
-    fn every_credential_label_sample_reaches_the_labelled_keyword_gate() {
-        use proptest::strategy::{Strategy, ValueTree};
-        use proptest::test_runner::{Config, RngAlgorithm, TestRng, TestRunner};
-
-        let mut runner = TestRunner::new_with_rng(
-            Config::default(),
-            TestRng::from_seed(RngAlgorithm::ChaCha, &[13; 32]),
-        );
-        let label = Regex::new(CREDENTIAL_LABEL).unwrap();
-        let strategy =
-            proptest::string::string_regex(&CREDENTIAL_LABEL.replace(r"\b", "")).unwrap();
-        for _ in 0..512 {
-            let sample = strategy.new_tree(&mut runner).unwrap().current();
-            assert!(label.is_match(&sample), "invalid sample: {sample:?}");
-            let mut labelled = false;
-            let _ = gitleaks::detect(&sample, &mut [], &mut labelled);
-            assert!(labelled, "labelled gate missed {sample:?}");
-        }
-        let mut labelled = false;
-        let _ = gitleaks::detect("safe! safe! nothing here", &mut [], &mut labelled);
-        assert!(!labelled);
     }
 
     #[test]
