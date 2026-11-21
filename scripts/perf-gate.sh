@@ -4,10 +4,12 @@
 # Usage: scripts/perf-gate.sh <base-checkout> <head-checkout>
 #
 # The head checkout's examples/perf_gate.rs is copied into the base checkout so
-# both revisions run the same benchmark code. The corpus is the head checkout's
-# own Rust sources and Markdown docs, limited to files the base revision leaves
-# unchanged. Both binaries run in alternating rounds; the per-case median of the
-# round medians is compared, and the script fails when any head case is slower
+# both revisions run the same benchmark code. There are two corpora from the
+# head checkout: its Rust sources (code) and its Markdown docs (prose), each
+# limited to UTF-8 files the base revision leaves unchanged. Paths are listed
+# one per line, so file names containing a newline are not supported. Both
+# binaries run in alternating rounds; the per-case median of the round medians
+# is compared, and the script fails when any head case is slower
 # than base by more than PERF_GATE_THRESHOLD (default 1.15).
 set -euo pipefail
 
@@ -24,15 +26,22 @@ done
 base_bin="$base/target/release/examples/perf_gate"
 head_bin="$head/target/release/examples/perf_gate"
 
-git -C "$head" ls-files -- 'src/*.rs' 'docs/*.md' README.md |
-  sed "s|^|$head/|" >"$work/all.list"
-"$base_bin" clean "$work/all.list" >"$work/clean.list"
-echo "corpus: $(wc -l <"$work/clean.list") of $(wc -l <"$work/all.list") files"
+list_files() {
+  git -C "$head" ls-files -z -- "$@" | tr '\0' '\n' | sed "s|^|$head/|"
+}
+list_files 'src/*.rs' >"$work/code.all"
+list_files 'docs/*.md' README.md >"$work/prose.all"
+for corpus in code prose; do
+  "$base_bin" clean "$work/$corpus.all" >"$work/$corpus.list"
+  echo "$corpus corpus: $(wc -l <"$work/$corpus.list") of $(wc -l <"$work/$corpus.all") files"
+done
 
 for round in $(seq "$rounds"); do
   echo "round $round/$rounds"
-  "$base_bin" bench "$work/clean.list" | sed 's/^/base,/' >>"$work/results.csv"
-  "$head_bin" bench "$work/clean.list" | sed 's/^/head,/' >>"$work/results.csv"
+  for corpus in code prose; do
+    "$base_bin" bench "$corpus" "$work/$corpus.list" | sed 's/^/base,/' >>"$work/results.csv"
+    "$head_bin" bench "$corpus" "$work/$corpus.list" | sed 's/^/head,/' >>"$work/results.csv"
+  done
 done
 
 python3 - "$work/results.csv" "$threshold" <<'PY'
