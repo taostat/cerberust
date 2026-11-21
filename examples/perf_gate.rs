@@ -7,9 +7,10 @@
 //! prints one CSV row per case: `<label>_<scan>_<size>,median_us,changed`.
 //! `changed` is 1 when the scan altered the input.
 //!
-//! Each file contributes at most `128 KiB / file count`, so every file is in the
-//! 128 KiB case and no single large file decides the result. The corpus must
-//! contain non-ASCII text, so the scanners' Unicode paths are always timed.
+//! Each file contributes at most `128 KiB / file count` bytes including its
+//! separator, so every file is in the 128 KiB case and no single large file
+//! decides the result. Every timed sample must contain non-ASCII text, so the
+//! scanners' Unicode paths are always timed.
 //!
 //! The example uses only the public API, so the CI job can copy it into the
 //! base revision and time both revisions with the same code.
@@ -29,7 +30,6 @@ use cerberust::scanners::{PiiScanner, SecretScanner};
 use cerberust::{ScanCtx, Scanner, ScannerStack};
 
 const SIZES_KIB: [usize; 2] = [128, 1024];
-const MIN_FILE_SHARE: usize = 1024;
 
 fn main() -> Result<(), String> {
     let args: Vec<String> = std::env::args().skip(1).collect();
@@ -38,10 +38,7 @@ fn main() -> Result<(), String> {
             print_clean(&read_list(list)?);
             Ok(())
         }
-        [mode, label, list] if mode == "bench" => {
-            bench(label, &corpus(&read_list(list)?)?);
-            Ok(())
-        }
+        [mode, label, list] if mode == "bench" => bench(label, &corpus(&read_list(list)?)?),
         _ => Err(
             "usage: perf_gate clean <file-list> | perf_gate bench <label> <file-list>".to_owned(),
         ),
@@ -81,7 +78,13 @@ fn corpus(paths: &[String]) -> Result<String, String> {
     if paths.is_empty() {
         return Err("file list is empty".to_owned());
     }
-    let share = (SIZES_KIB[0] * 1024 / paths.len()).max(MIN_FILE_SHARE);
+    let share = (SIZES_KIB[0] * 1024 / paths.len()).saturating_sub(1);
+    if share == 0 {
+        return Err(format!(
+            "{} files leave no room per file in 128 KiB",
+            paths.len()
+        ));
+    }
     let mut unit = String::new();
     for path in paths {
         let text = std::fs::read_to_string(path).map_err(|err| format!("read {path}: {err}"))?;
@@ -90,9 +93,6 @@ fn corpus(paths: &[String]) -> Result<String, String> {
     }
     if unit.trim().is_empty() {
         return Err("file list produced an empty corpus".to_owned());
-    }
-    if unit.is_ascii() {
-        return Err("corpus has no non-ASCII text; add files that contain some".to_owned());
     }
     let mut text = unit.clone();
     while text.len() < SIZES_KIB[SIZES_KIB.len() - 1] * 1024 {
@@ -142,10 +142,15 @@ fn time_stack(text: &str, iters: usize) -> f64 {
     })
 }
 
-fn bench(label: &str, full: &str) {
+fn bench(label: &str, full: &str) -> Result<(), String> {
     let (pii, secrets) = (PiiScanner::new(), SecretScanner::new());
     for kib in SIZES_KIB {
         let text = prefix(full, kib * 1024);
+        if text.is_ascii() {
+            return Err(format!(
+                "{label} {kib} KiB sample has no non-ASCII text; add files that contain some"
+            ));
+        }
         let iters = if kib > 256 { 11 } else { 41 };
         let pii_changed = changes(&pii, text);
         let secrets_changed = changes(&secrets, text);
@@ -166,4 +171,5 @@ fn bench(label: &str, full: &str) {
             println!("{label}_{name}_{kib}k,{median:.1},{}", u8::from(changed));
         }
     }
+    Ok(())
 }
