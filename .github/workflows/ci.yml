@@ -69,3 +69,30 @@ jobs:
         with:
           arguments: --all-features
           command: check
+
+  # Scan-time gate: times the base and head revisions in the same job on the
+  # crate's own sources and docs, and fails when head is more than 15% slower.
+  perf:
+    name: perf gate (head vs base)
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          path: head
+          persist-credentials: false
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          ref: ${{ github.event.pull_request.base.sha }}
+          path: base
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@e97e2d8cc328f1b50210efc529dca0028893a2d9 # v1
+        with:
+          toolchain: stable
+      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
+        with:
+          workspaces: |
+            head -> target
+            base -> target
+      - name: compare scan time
+        run: head/scripts/perf-gate.sh base head
